@@ -268,20 +268,42 @@
         });
 
         function abrirKickParaID(e) {
-            e.preventDefault();
-            const user = document.getElementById('helper-name').value.trim();
-            if(!user) { 
-                alert("Requisito: Ingrese el target del canal antes de generar el ID."); 
-                return; 
-            }
-            document.getElementById('tutorial-modal').classList.remove('hidden');
+            if(e) e.preventDefault();
+            iniciarConexion();
         }
 
         function ejecutarAperturaKick() {
-            const user = document.getElementById('helper-name').value.trim();
+            const user = (document.getElementById('helper-name').value || document.getElementById('username').value).trim();
             const urlMagica = `https://kick.com/api/v1/channels/${user}#:~:text=chatroom`;
             window.open(urlMagica, '_blank');
-            document.getElementById('tutorial-modal').classList.add('hidden');
+            document.getElementById('btn-proceder-kick').classList.add('hidden');
+            document.getElementById('btn-auto-paste').classList.remove('hidden');
+        }
+
+        async function pegarIdYConectar() {
+            try {
+                let text = '';
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    text = await navigator.clipboard.readText();
+                } else {
+                    text = prompt("Pegue aquí el número ID copiado:");
+                }
+                const match = text ? text.match(/\d+/) : null;
+                if (match) {
+                    document.getElementById('username').value = match[0];
+                    cerrarTutorial();
+                    iniciarConexion();
+                } else {
+                    alert("No se detectó un número ID en el portapapeles. Copie el número de la pestaña abierta y presione este botón.");
+                }
+            } catch (err) {
+                const manualId = prompt("Pegue el número ID aquí:");
+                if (manualId && /^\d+$/.test(manualId.trim())) {
+                    document.getElementById('username').value = manualId.trim();
+                    cerrarTutorial();
+                    iniciarConexion();
+                }
+            }
         }
 
         function cerrarTutorial() {
@@ -297,13 +319,15 @@
 
         // --- MOTOR HÍBRIDO DE CONEXIÓN ---
         async function iniciarConexion() {
-            const inputValue = document.getElementById('username').value.trim();
+            const inputUser = document.getElementById('username').value.trim();
+            const inputHelper = document.getElementById('helper-name').value.trim();
+            const inputValue = inputUser || inputHelper;
             const status = document.getElementById('status-text');
             const btnConectar = document.getElementById('btn-conectar');
             
             if (!inputValue) {
                 status.style.color = "#ff4444";
-                status.innerText = "Comando inválido: ID de conexión vacío.";
+                status.innerText = "Comando inválido: Escriba el nombre del canal o ID de conexión.";
                 return;
             }
             
