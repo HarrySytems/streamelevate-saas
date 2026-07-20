@@ -1,0 +1,13 @@
+{
+  "name": "streamelevate-pro-saas",
+  "version": "1.1.0",
+  "description": "SaaS de Moderacion de Chat para Kick by Harry Systems",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.4"
+  }
+}

@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>StreamElevate | Control Room</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://js.pusher.com/8.0.1/pusher.min.js"></script>
+    <style>
+        :root { --kick: #53fc18; --bg: #050505; --panel: #111111; }
+        body { background: var(--bg); color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0a0a0a; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--kick); }
+
+        .dashboard { background: var(--panel); padding: 25px; border-radius: 6px; border: 1px solid #222; width: 95vw; max-width: 1500px; box-shadow: 0 15px 50px rgba(0,0,0,0.9); height: 92vh; display: flex; flex-direction: column; position: relative; z-index: 2; }
+        
+        .modal-box { background: rgba(17, 17, 17, 0.95); padding: 35px; border-radius: 6px; border: 1px solid rgba(83, 252, 24, 0.2); backdrop-filter: blur(12px); width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,0.9); text-align: center; position: relative; z-index: 2; }
+
+        .dash-layout { display: grid; grid-template-columns: 400px 1fr; gap: 25px; flex-grow: 1; min-height: 0; margin-bottom: 15px; }
+        .col-left { display: flex; flex-direction: column; gap: 15px; overflow-y: auto; padding-right: 5px; }
+        .col-right { display: flex; flex-direction: column; gap: 15px; min-height: 0; }
+
+        h1 { color: var(--kick); margin: 0; letter-spacing: 1px; font-size: 20px; text-transform: uppercase; display: flex; align-items: center; gap: 10px; }
+        h1 span { color: #fff; font-weight: 300; }
+        
+        .section { background: #080808; padding: 20px; border-radius: 4px; border: 1px solid #1f1f1f; display: flex; flex-direction: column; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #222; }
+        .section label { font-size: 11px; color: #888; text-transform: uppercase; font-weight: bold; margin: 0 0 10px 0; display: block; letter-spacing: 0.5px; }
+        
+        input[type="text"], select { width: 100%; padding: 12px; background: #151515; border: 1px solid #333; color: white; margin-bottom: 12px; border-radius: 4px; box-sizing: border-box; font-family: monospace; font-size: 13px;}
+        input[type="text"]:focus, select:focus { outline: none; border-color: var(--kick); }
+        input[type="range"] { width: 100%; accent-color: var(--kick); margin-bottom: 15px; cursor: pointer; }
+        
+        button { width: 100%; padding: 12px; background: var(--kick); color: black; border: none; font-weight: bold; cursor: pointer; text-transform: uppercase; transition: 0.2s; border-radius: 4px; font-size: 12px; letter-spacing: 0.5px;}
+        button:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+        button:disabled { background: #222; color: #555; cursor: not-allowed; }
+        
+        .btn-red { background: #d32f2f; color: white; margin-top: auto; }
+        .btn-red:hover:not(:disabled) { background: #e53935; }
+        
+        .btn-freeze { width: auto; padding: 6px 12px; font-size: 10px; background: #333; color: white; border: none; cursor: pointer; }
+        .btn-freeze.active { background: #ffaa00; color: black; }
+        
+        .chat-wrapper { flex-grow: 1; display: flex; flex-direction: column; min-height: 0; }
+        #live-chat { flex-grow: 1; overflow-y: auto; overflow-x: hidden; background: #020202; border: 1px solid #222; padding: 15px; transition: 0.2s; border-radius: 4px; scroll-behavior: smooth;}
+        
+        .dash-msg { background: #111; padding: 10px 12px; margin-bottom: 8px; border-left: 3px solid #333; display: flex; justify-content: space-between; align-items: center; font-size: 14px; box-sizing: border-box; border-radius: 3px; transition: 0.2s;}
+        .dash-msg:hover { background: #151515; border-left-color: #555; }
+        
+        .msg-text { flex-grow: 1; word-wrap: break-word; overflow-wrap: break-word; padding-right: 15px; line-height: 1.4;}
+        .msg-text strong { text-shadow: 1px 1px 2px rgba(0,0,0,0.8); }
+        
+        .btn-small { flex-shrink: 0; width: auto; padding: 6px 12px; font-size: 11px; margin-left: auto; transition: 0.2s; background: #222; color: white;}
+        .btn-small:hover { background: #333; }
+        .chat-emote { height: 26px; vertical-align: middle; margin: 0 2px;}
+
+        #live-chat.mode-auto .btn-small { display: none !important; }
+        #result-box { display: none; margin-top: 15px; padding-top: 15px; border-top: 1px dashed #333; }
+        
+        @keyframes pulse { 0% { opacity: 0.5; } 50% { opacity: 1; } 100% { opacity: 0.5; } }
+        .loading-text { color: #00e5ff !important; animation: pulse 1s infinite; font-weight: bold; }
+
+        .hidden { display: none !important; }
+        
+        .id-helper { background: rgba(0, 229, 255, 0.05); border: 1px dashed #00e5ff; padding: 15px; border-radius: 4px; margin-bottom: 15px; font-size: 12px; color: #aaa; text-align: left;}
+        .id-helper input { width: 100%; padding: 10px; margin-top: 10px; background: #000; border: 1px solid #333; color: white; border-radius: 4px;}
+        .id-helper a { color: #00e5ff; font-weight: bold; text-decoration: none; display: inline-block; margin-top: 5px; text-transform: uppercase; font-size: 11px;}
+        .id-helper a:hover { text-decoration: underline; }
+
+        .overlay-bg { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.9); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .step-box { text-align: left; font-size: 14px; color: #ccc; line-height: 1.6; margin-bottom: 25px; background: #0a0a0a; padding: 20px; border-radius: 4px; border: 1px solid #222; }
+        .step-box ol { padding-left: 20px; margin-bottom: 0; }
+        .step-box li { margin-bottom: 10px; }
+
+        .footer { text-align: center; font-size: 11px; color: #666; margin-top: auto; padding-top: 15px; border-top: 1px solid #222; }
+        .footer a { color: #00e5ff; text-decoration: none; transition: 0.2s;}
+        .footer a:hover { color: white; }
+
+        .manual-box { width: 700px !important; max-height: 85vh; overflow-y: auto; text-align: left !important; }
+        .manual-box h3 { color: #53fc18; font-size: 18px; margin-top: 25px; margin-bottom: 10px; text-transform: uppercase; }
+        .manual-box p { color: #ccc; font-size: 14px; line-height: 1.6; margin-bottom: 15px; }
+        .code-block { background: #000; padding: 15px; border-left: 4px solid #00e5ff; font-family: monospace; font-size: 13px; color: white; margin-bottom: 15px; border-radius: 2px;}
+
+        /* --- RESPONSIVE DESIGN (ADAPTACIÓN A CELULARES) --- */
+        @media (max-width: 768px) {
+            body { overflow-y: auto; height: auto; min-height: 100vh; align-items: flex-start; }
+            .dashboard { height: auto; min-height: 100vh; width: 100vw; padding: 15px; box-sizing: border-box; margin: 0; border: none; border-radius: 0; }
+            .dash-layout { display: flex; flex-direction: column; overflow: visible; gap: 20px; }
+            .col-left { flex: none; overflow: visible; padding-right: 0; }
+            .col-right { flex: none; height: 70vh; min-height: 500px; display: flex; flex-direction: column; }
+            
+            .modal-box { width: 90vw !important; padding: 20px; box-sizing: border-box; }
+            .manual-box { width: 95vw !important; }
+            
+            .dashboard > div:first-child { flex-direction: column; gap: 15px; }
+            h1 { justify-content: center; font-size: 18px; text-align: center; }
+            
+            .dash-msg { flex-direction: column; align-items: flex-start; }
+            .btn-small { margin-left: 0; margin-top: 10px; width: 100%; }
+            
+            .section { padding: 15px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="tutorial-modal" class="overlay-bg hidden">
+        <div class="modal-box" style="width: 500px;">
+            <h2 style="color: #00e5ff; margin-top: 0; font-size: 22px; text-transform: uppercase;">Extracción de ID</h2>
+            <div class="step-box">
+                <p style="margin-top: 0; color: white;">Siga las instrucciones para enlazar el motor de datos:</p>
+                <ol>
+                    <li>Haga clic en el botón inferior para abrir el código fuente del canal.</li>
+                    <li>En la nueva pestaña, presione <strong>Ctrl + F</strong>.</li>
+                    <li>Busque la palabra exacta <strong style="color: #53fc18;">chatroom</strong>.</li>
+                    <li>Copie el <b>número</b> asignado a la variable "id".</li>
+                </ol>
+                
+                <div style="text-align: center; margin-top: 20px; padding-top: 20px; border-top: 1px dashed #333; font-family: monospace;">
+                    <span style="color: #888;">Ejemplo en el código fuente de Kick:</span><br><br>
+                    <span style="color:white;">"chatroom": { "id": </span>
+                    <span style="color: #53fc18; font-weight: bold; font-size: 18px; text-decoration: underline;">10464231</span>
+                    <span style="color:white;"> }</span>
+                </div>
+            </div>
+            <button onclick="ejecutarAperturaKick()" style="background: #00e5ff; color: black; margin-bottom: 12px;">PROCEDER Y ABRIR CODIGO</button>
+            <button onclick="cerrarTutorial()" style="background: transparent; color: #888; border: 1px solid #444;">CANCELAR</button>
+        </div>
+    </div>
+
+    <div id="manual-modal" class="overlay-bg hidden">
+        <div class="modal-box manual-box">
+            <h2 style="color: #00e5ff; margin-top: 0; font-size: 24px; text-transform: uppercase; border-bottom: 2px solid #222; padding-bottom: 15px;">Manual de Operación Oficial</h2>
+            
+            <h3>¿Cómo funciona la Moderación Remota?</h3>
+            <p>Este sistema está diseñado exclusivamente para <strong>Kick.com</strong>. Permite que el control del stream se maneje a distancia sin afectar el rendimiento de la PC del streamer.</p>
+            <p><strong>Ejemplo práctico:</strong> Imagina que el streamer <em>Westcol</em> está transmitiendo desde su casa en <strong>Cali</strong>, pero tú (el moderador) vives en <strong>Medellín</strong>.<br>
+            Abres este panel en Medellín, escribes el nombre del canal, generas el ID de conexión y le mandas el enlace final a Westcol por WhatsApp o Discord. Westcol solo pega el enlace en su OBS Studio (Fuente de Navegador) y se olvida. Desde ese momento, cualquier botón que presiones en Medellín, controlará y proyectará mensajes en la pantalla de Westcol en Cali de forma instantánea.</p>
+
+            <h3>El Enlace Dinámico y el ID</h3>
+            <p>El "televisor" (OBS) y el "control remoto" (este panel) se vinculan a través de la URL. La estructura siempre es la misma, lo único que cambia es el número final (ID de la Sala):</p>
+            <div class="code-block">
+                https://streamelevate.harrysystems.website/overlay.html?id=<span style="color:#53fc18; font-weight:bold;">10464231</span>
+            </div>
+            <p>Ese número final es la llave de seguridad. Asegura que los mensajes no se crucen con los de otros streamers.</p>
+
+            <h3>Control de Velocidad (Pausar el Chat)</h3>
+            <p>Si estás moderando un canal con miles de espectadores, el chat se moverá demasiado rápido. Para evitar que los mensajes se escapen, tienes dos opciones nativas:</p>
+            <ul>
+                <li style="color: #ccc; margin-bottom: 8px;"><strong>Opción 1:</strong> Presiona el botón físico <em>"CONGELAR FLUJO"</em> en la parte superior del chat.</li>
+                <li style="color: #ccc;"><strong>Opción 2 (Recomendada):</strong> Simplemente coloca el puntero del mouse sobre la caja de mensajes. El panel detectará tu presencia y detendrá el desplazamiento automático para que puedas leer y darle clic a <em>"PROYECTAR"</em> con total tranquilidad.</li>
+            </ul>
+
+            <div style="text-align: right; margin-top: 30px; border-top: 1px solid #333; padding-top: 20px;">
+                <button onclick="cerrarManual()" style="background: #333; color: white; width: auto; padding: 12px 25px;">ENTENDIDO, CERRAR MANUAL</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="main-ui" class="dashboard">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #222;">
+            <h1>StreamElevate <span>| Control Room</span></h1>
+            <div style="display: flex; align-items: center;">
+                <button style="width: auto; padding: 8px 15px; background: rgba(0, 229, 255, 0.1); color: #00e5ff; font-weight: bold; font-size: 11px; border: 1px solid #00e5ff; cursor: pointer; border-radius: 4px;" onclick="abrirManual()">GUIA DE FUNCIONAMIENTO</button>
+            </div>
+        </div>
+        
+        <div class="dash-layout">
+            <div class="col-left">
+                <div class="section">
+                    <label style="color: #00e5ff; font-size: 12px;">1. ENLACE DE TRANSMISION</label>
+                    <div class="id-helper" id="helper-box">
+                        Si desconoce el ID, ingrese el nombre del canal para generarlo.<br>
+                        <input type="text" id="helper-name" placeholder="Ej: westcol">
+                        <a href="#" onclick="abrirKickParaID(event)">> GENERAR ID SEGURO</a>
+                    </div>
+                    <label>ID Numérico de Conexión</label>
+                    <input type="text" id="username" placeholder="Pegue el ID Numérico o Usuario aquí" style="font-size: 16px; font-weight: bold; text-align: center;">
+                    <button id="btn-conectar" onclick="iniciarConexion()">INICIAR CONEXION AL SERVIDOR</button>
+                    <div id="status-text" style="font-size:12px; color:#53fc18; margin-top:10px; text-align: center;">Estado: Desconectado</div>
+                    
+                    <div id="result-box">
+                        <label>URL Dinámica para OBS Studio</label>
+                        <input type="text" id="obs-link" readonly style="color: #00e5ff; font-weight: bold; background: rgba(0, 229, 255, 0.05); border-color: #00e5ff;">
+                        <button onclick="copiarLink()" style="background:transparent; color:var(--kick); border:1px solid var(--kick); margin-top:5px;">COPIAR ENLACE AL PORTAPAPELES</button>
+                    </div>
+                </div>
+
+                <div class="section" style="flex-grow: 1;">
+                    <label>Parámetros de Salida Visual</label>
+                    <select id="chat-mode" onchange="changeMode()">
+                        <option value="auto">MODO AUTOMATICO (Flujo libre en pantalla)</option>
+                        <option value="manual">MODO MANUAL (Control estricto de selección)</option>
+                    </select>
+                    
+                    <div style="display: flex; justify-content: space-between; margin-top: 15px;">
+                        <label>Persistencia de mensajes:</label>
+                        <label style="color: #00e5ff;"><span id="time-val">15</span> SEG</label>
+                    </div>
+                    <input type="range" id="time-slider" min="5" max="120" value="15" oninput="updateTime()">
+                    
+                    <button class="btn-red" onclick="limpiarPantalla()">FORZAR LIMPIEZA DE PANTALLA EN OBS</button>
+                </div>
+            </div>
+
+            <div class="col-right">
+                <div class="section chat-wrapper">
+                    <div class="section-header">
+                        <label style="margin:0;">Monitor de Moderación en Tiempo Real</label>
+                        <button id="btn-freeze" class="btn-freeze" onclick="toggleFreeze()">CONGELAR FLUJO</button>
+                    </div>
+                    <div id="live-chat" class="mode-auto"></div>
+                </div>
+
+                <div class="section">
+                    <label style="color: #ffaa00;">Creador de Mensajes Personalizados (Sobreescritura en OBS)</label>
+                    <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                        <input type="text" id="custom-user" placeholder="Firma (Ej: ADMIN)" style="width: 30%; margin: 0; font-weight: bold; color: #ffaa00;">
+                        <input type="text" id="custom-msg" placeholder="Redactar mensaje en pantalla..." style="margin: 0; flex-grow: 1;">
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <button id="btn-alerta" onclick="enviarAlerta('alert')" style="background: #ffaa00; color: black; flex: 1;">ALERTA (NARANJA)</button>
+                        <button id="btn-manual" onclick="enviarAlerta('manual')" style="background: #00e5ff; color: black; flex: 1;">CHAT (CYAN)</button>
+                    </div>
+                </div>
+                
+            </div>
+        </div>
+
+        <div class="footer">
+            &copy; 2026 Engine desarrollado por <strong>Harry Systems</strong>. Plataforma de Moderación Gratuita y Libre.<br>
+            Soporte y asistencia técnica: <a href="mailto:contacto@harrysystems.website">contacto@harrysystems.website</a>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let dashPusher = null; 
+        let dashChannel = null; 
+        let isFeedFrozen = false; 
+        let activeStreamId = null;
+
+        // --- MANEJO DE ESTADO LOCAL (FREEZE Y MODALES) ---
+        function toggleFreeze(forceState = null) {
+            isFeedFrozen = forceState !== null ? forceState : !isFeedFrozen;
+            const btn = document.getElementById('btn-freeze'); 
+            const feed = document.getElementById('live-chat');
+            
+            if (isFeedFrozen) { 
+                btn.innerText = 'REANUDAR FLUJO'; 
+                btn.classList.add('active'); 
+                feed.style.borderColor = '#ffaa00'; 
+            } else { 
+                btn.innerText = 'CONGELAR FLUJO'; 
+                btn.classList.remove('active'); 
+                feed.style.borderColor = '#222'; 
+            }
+        }
+
+        const feedContainer = document.getElementById('live-chat');
+        feedContainer.addEventListener('mouseenter', () => toggleFreeze(true));
+        feedContainer.addEventListener('mouseleave', () => toggleFreeze(false));
+        feedContainer.addEventListener('wheel', () => { 
+            if(!isFeedFrozen) toggleFreeze(true); 
+        });
+
+        function abrirKickParaID(e) {
+            e.preventDefault();
+            const user = document.getElementById('helper-name').value.trim();
+            if(!user) { 
+                alert("Requisito: Ingrese el target del canal antes de generar el ID."); 
+                return; 
+            }
+            document.getElementById('tutorial-modal').classList.remove('hidden');
+        }
+
+        function ejecutarAperturaKick() {
+            const user = document.getElementById('helper-name').value.trim();
+            const urlMagica = `https://kick.com/api/v1/channels/${user}#:~:text=chatroom`;
+            window.open(urlMagica, '_blank');
+            document.getElementById('tutorial-modal').classList.add('hidden');
+        }
+
+        function cerrarTutorial() {
+            document.getElementById('tutorial-modal').classList.add('hidden');
+        }
+
+        function abrirManual() {
+            document.getElementById('manual-modal').classList.remove('hidden');
+        }
+        function cerrarManual() {
+            document.getElementById('manual-modal').classList.add('hidden');
+        }
+
+        // --- MOTOR HÍBRIDO DE CONEXIÓN ---
+        async function iniciarConexion() {
+            const inputValue = document.getElementById('username').value.trim();
+            const status = document.getElementById('status-text');
+            const btnConectar = document.getElementById('btn-conectar');
+            
+            if (!inputValue) {
+                status.style.color = "#ff4444";
+                status.innerText = "Comando inválido: ID de conexión vacío.";
+                return;
+            }
+            
+            btnConectar.disabled = true;
+            status.className = "loading-text";
+            status.innerText = "Negociando acceso con el servidor proxy...";
+            
+            try {
+                let id;
+                
+                if (/^\d+$/.test(inputValue)) {
+                    id = inputValue;
+                    status.innerText = `[ENLAZADO] Conexión Directa. Sala activa: ${id}`;
+                } else {
+                    status.innerText = "Traspasando WAF. (Tiempo est: 8s)...";
+                    const res = await fetch(`/api/kick/${encodeURIComponent(inputValue)}`);
+                    const data = await res.json();
+                    
+                    if (!res.ok || !data.chatroom_id) {
+                        throw new Error(data.error || "Bloqueo perimetral detectado.");
+                    }
+                    id = data.chatroom_id;
+                    status.innerText = `[ENLAZADO] Extracción híbrida. Sala activa: ${id}`;
+                }
+                
+                status.className = "";
+                status.style.color = "#00e5ff";
+                
+                activeStreamId = id;
+
+                changeMode();
+                updateTime();
+
+                const url = `${window.location.origin}/overlay.html?id=${id}`;
+                document.getElementById('obs-link').value = url;
+                document.getElementById('result-box').style.display = 'block';
+                
+                conectarFeed(id);
+                
+            } catch (e) {
+                status.className = "";
+                status.style.color = "#ff4444";
+                status.innerText = `[SISTEMA AISLADO] ${e.message}`;
+                document.getElementById('helper-box').style.borderColor = "#ff4444";
+                document.getElementById('helper-box').style.background = "rgba(255, 68, 68, 0.1)";
+            } finally {
+                btnConectar.disabled = false;
+                btnConectar.innerText = "ACTUALIZAR CONEXION";
+            }
+        }
+
+        // --- PUSHER CORE Y FLUJO DE CHAT ---
+        function conectarFeed(id) {
+            if(dashPusher !== null) {
+                if(dashChannel !== null) { 
+                    dashChannel.unbind_all(); 
+                    dashPusher.unsubscribe(dashChannel.name); 
+                }
+                dashPusher.disconnect(); 
+                dashPusher = null; 
+                dashChannel = null;
+            }
+            
+            document.getElementById('live-chat').innerHTML = ''; 
+            
+            setTimeout(() => {
+                dashPusher = new Pusher('32cbd69e4b950bf97679', { cluster: 'us2', forceTLS: true });
+                dashChannel = dashPusher.subscribe(`chatrooms.${id}.v2`);
+                
+                dashChannel.bind('App\\Events\\ChatMessageEvent', (data) => {
+                    if (isFeedFrozen) return;
+                    const chatData = typeof data === 'string' ? JSON.parse(data) : data;
+                    agregarAlFeed(chatData.sender, chatData.content);
+                });
+            }, 100);
+        }
+
+        function agregarAlFeed(sender, text) {
+            const feed = document.getElementById('live-chat');
+            const div = document.createElement('div');
+            div.className = 'dash-msg';
+            
+            const user = sender.username || 'Usuario';
+            let color = '#53fc18'; 
+            
+            if (sender.identity && sender.identity.color) {
+                color = sender.identity.color;
+            }
+            
+            const htmlText = text.replace(/\[emote:(\d+):([^\]]+)\]/g, '<img src="https://files.kick.com/emotes/$1/fullsize" class="chat-emote">');
+            
+            div.innerHTML = `<div class="msg-text"><strong style="color: ${color};">${user}:</strong> ${htmlText}</div>`;
+            
+            const btn = document.createElement('button');
+            btn.className = 'btn-small'; 
+            btn.innerText = 'PROYECTAR';
+            
+            btn.onclick = function() { 
+                if(!activeStreamId) return;
+
+                const todosLosBotones = document.querySelectorAll('#live-chat .btn-small');
+                todosLosBotones.forEach(b => {
+                    b.innerText = 'PROYECTAR';
+                    b.style.background = ''; 
+                    b.style.color = '';      
+                    b.style.borderColor = 'transparent';
+                });
+
+                this.innerText = 'PROYECTANDO';
+                this.style.background = '#0a0a0a'; 
+                this.style.color = '#00e5ff';   
+                this.style.border = '1px solid #00e5ff';
+
+                socket.emit('showSpecificMessage', { id: activeStreamId, user: user, text: text, color: color }); 
+            };
+            
+            div.appendChild(btn); 
+            feed.appendChild(div); 
+            
+            if(feed.children.length > 100) {
+                feed.firstChild.remove();
+            }
+
+            if (!isFeedFrozen) {
+                feed.scrollTop = feed.scrollHeight;
+            }
+        }
+
+        // --- EVENTOS DE MODERACIÓN Y OVERLAY ---
+        function changeMode() { 
+            const modoSeleccionado = document.getElementById('chat-mode').value;
+            document.getElementById('live-chat').className = modoSeleccionado === 'auto' ? 'mode-auto' : '';
+            
+            if(!activeStreamId) return;
+            socket.emit('configUpdate', { id: activeStreamId, type: 'mode', value: modoSeleccionado }); 
+        }
+        
+        function updateTime() { 
+            const sliderVal = document.getElementById('time-slider').value;
+            document.getElementById('time-val').innerText = sliderVal;
+            
+            if(!activeStreamId) return;
+            socket.emit('configUpdate', { id: activeStreamId, type: 'duration', value: parseInt(sliderVal) * 1000 }); 
+        }
+        
+        function enviarAlerta(tipo) {
+            if(!activeStreamId) {
+                alert("Comando bloqueado: Requiere un canal activo para emitir alertas.");
+                return;
+            }
+            
+            const user = document.getElementById('custom-user').value.trim() || 'SISTEMA';
+            const msg = document.getElementById('custom-msg').value.trim();
+            
+            if (msg) { 
+                const btn = tipo === 'alert' ? document.getElementById('btn-alerta') : document.getElementById('btn-manual');
+                const textoOriginal = btn.innerText;
+                const fondoOriginal = btn.style.background;
+                
+                btn.innerText = '¡PROYECTADO EN OBS!';
+                btn.style.background = '#fff';
+                
+                setTimeout(() => {
+                    btn.innerText = textoOriginal;
+                    btn.style.background = fondoOriginal;
+                }, 2000);
+
+                socket.emit('customMessage', { id: activeStreamId, user: user, msg: msg, type: tipo, color: '#ffaa00' }); 
+                document.getElementById('custom-msg').value = ''; 
+            }
+        }
+
+        function limpiarPantalla() {
+            if(!activeStreamId) return;
+            socket.emit('clearScreen', { id: activeStreamId });
+        }
+        
+        function copiarLink() { 
+            const el = document.getElementById('obs-link'); 
+            el.select(); 
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(el.value).then(() => {
+                    alert("URL copiada. Pegue este enlace en el navegador de OBS Studio.");
+                });
+            } else {
+                document.execCommand('copy');
+                alert("URL copiada. Pegue este enlace en el navegador de OBS Studio.");
+            }
+        }
+    </script>
+</body>
+</html>
