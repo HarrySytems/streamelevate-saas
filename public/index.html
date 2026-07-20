@@ -318,15 +318,25 @@
                     id = inputValue;
                     status.innerText = `[ENLAZADO] Conexión Directa. Sala activa: ${id}`;
                 } else {
-                    status.innerText = "Traspasando WAF. (Tiempo est: 8s)...";
-                    const res = await fetch(`/api/kick/${encodeURIComponent(inputValue)}`);
-                    const data = await res.json();
-                    
-                    if (!res.ok || !data.chatroom_id) {
-                        throw new Error(data.error || "Bloqueo perimetral detectado.");
+                    status.innerText = "Obteniendo ID de transmisión...";
+                    try {
+                        const res = await fetch(`https://kick.bytelog.lat/${encodeURIComponent(inputValue)}`);
+                        const data = await res.json();
+                        if (data && data.chatroom_id) {
+                            id = data.chatroom_id;
+                        } else {
+                            throw new Error("No se pudo extraer el ID del canal.");
+                        }
+                    } catch (err) {
+                        const resBackup = await fetch(`/api/kick/${encodeURIComponent(inputValue)}`);
+                        const dataBackup = await resBackup.json();
+                        if (dataBackup && dataBackup.chatroom_id) {
+                            id = dataBackup.chatroom_id;
+                        } else {
+                            throw new Error("No se encontró el canal especificado.");
+                        }
                     }
-                    id = data.chatroom_id;
-                    status.innerText = `[ENLAZADO] Extracción híbrida. Sala activa: ${id}`;
+                    status.innerText = `[ENLAZADO] Extracción automática. Sala activa: ${id}`;
                 }
                 
                 status.className = "";
