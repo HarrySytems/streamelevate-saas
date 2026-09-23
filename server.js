@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -11,9 +12,13 @@ app.set('trust proxy', true);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const APIFY_TOKEN = 'apify_api_80Edeyg2MtaqjPAxEdpBhnYfdghGH74o7mHy';
+const APIFY_TOKEN = process.env.APIFY_TOKEN || '';
 
-// --- MOTOR HÍBRIDO EXTRACTOR DE KICK ---
+// --- API CENTRALIZADA DE TELEMETRÍA (v1) ---
+const apiRoutes = require('./src/api-routes');
+app.use('/api/v1', apiRoutes);
+
+// --- MOTOR HÍBRIDO EXTRACTOR DE KICK (Compatibilidad) ---
 app.get('/api/kick/:username', async (req, res) => {
     const username = req.params.username.trim();
     const targetUrl = `https://kick.com/api/v1/channels/${username}`;
@@ -35,6 +40,7 @@ app.get('/api/kick/:username', async (req, res) => {
     } catch (e) {}
 
     try {
+        if (!APIFY_TOKEN) throw new Error("Sin token");
         const apifyUrl = `https://api.apify.com/v2/acts/jancurn~url-downloader/run-sync-get-dataset-items?token=${APIFY_TOKEN}`;
         const apifyRes = await fetch(apifyUrl, {
             method: 'POST',
@@ -60,7 +66,7 @@ app.get('/api/kick/:username', async (req, res) => {
     }
 });
 
-// --- CORE WEBSOCKETS (MULTIPROPÓSITO) ---
+// --- CORE WEBSOCKETS (MULTIPROPÓSITO / OVERLAYS) ---
 const roomConfigStates = {}; 
 
 io.on('connection', (socket) => {
@@ -97,7 +103,14 @@ io.on('connection', (socket) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
+// --- INICIAR COLECTOR 24/7 ---
+const { startCollector } = require('./src/collector');
+
+const PORT = process.env.PORT || 3050;
 server.listen(PORT, () => {
-    console.log(`[MOTOR STREAM ELEVATE] Servidor de moderación activo en el puerto ${PORT}`);
+    console.log(`====================================================`);
+    console.log(`[STREAM ELEVATE PRO] Servidor Activo en Puerto ${PORT}`);
+    console.log(`[API TELEMETRÍA] Endpoint: http://localhost:${PORT}/api/v1/health`);
+    console.log(`====================================================`);
+    startCollector();
 });
