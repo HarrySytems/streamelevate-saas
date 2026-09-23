@@ -423,6 +423,21 @@
       document.getElementById('streamTitle').textContent = data.title || (isLive ? 'Emisión en directo' : 'Canal fuera de línea');
       document.getElementById('avatarFallback').textContent = data.slug[0].toUpperCase();
 
+      const avatarImg = document.getElementById('avatarImg');
+      const avatarFallback = document.getElementById('avatarFallback');
+      if (data.avatar_url) {
+        avatarImg.src = data.avatar_url;
+        avatarImg.style.display = 'block';
+        avatarFallback.style.display = 'none';
+        avatarImg.onerror = () => {
+          avatarImg.style.display = 'none';
+          avatarFallback.style.display = 'flex';
+        };
+      } else {
+        avatarImg.style.display = 'none';
+        avatarFallback.style.display = 'flex';
+      }
+
       // Badge En Vivo
       const badge = document.getElementById('liveBadge');
       if (isLive) {

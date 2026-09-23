@@ -614,9 +614,9 @@
         if (currentStreamerData.avatar_url && currentStreamerData.avatar_url !== currentAvatarUrl) {
           currentAvatarUrl = currentStreamerData.avatar_url;
           const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.src = currentAvatarUrl;
           img.onload = () => { streamerAvatarImg = img; };
+          img.onerror = () => { console.warn('Avatar image failed to load:', currentAvatarUrl); };
+          img.src = currentAvatarUrl;
         }
 
         // Cargar muestras históricas de la sesión

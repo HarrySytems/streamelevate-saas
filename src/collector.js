@@ -13,6 +13,8 @@ const memoryState = {
   pusherSubscribed: new Map()// chatroomId -> channelSubscription
 };
 
+const kickAvatarCache = new Map(); // broadcaster_user_id -> profile_picture URL
+
 let pusher = null;
 let twitchWs = null;
 const twitchSubscribed = new Set();
@@ -340,6 +342,24 @@ async function pollKickBatch(channels) {
     const json = await res.json();
     const items = Array.isArray(json.data) ? json.data : [];
 
+    // Cargar fotos de avatar oficiales de los streamers en Kick
+    const userIdsToFetch = items.map(it => it.broadcaster_user_id).filter(id => id && !kickAvatarCache.has(id));
+    if (userIdsToFetch.length > 0) {
+      try {
+        const q = userIdsToFetch.slice(0, 30).map(id => 'id=' + id).join('&');
+        const uRes = await fetch('https://api.kick.com/public/v1/users?' + q, {
+          headers: { Authorization: 'Bearer ' + token },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (uRes.ok) {
+          const uData = await uRes.json();
+          (uData.data || []).forEach(u => {
+            if (u.user_id && u.profile_picture) kickAvatarCache.set(u.user_id, u.profile_picture);
+          });
+        }
+      } catch(e) {}
+    }
+
     for (const item of items) {
       const slug = (item.slug || '').toLowerCase();
       if (!slug) continue;
@@ -351,7 +371,7 @@ async function pollKickBatch(channels) {
       const viewers = isLive ? (Number(stream.viewer_count) || 0) : 0;
       const category = isLive ? (item.category?.name || 'General') : null;
       const title = isLive ? (item.stream_title || '') : null;
-      const avatarUrl = item.banner_picture || null;
+      const avatarUrl = kickAvatarCache.get(item.broadcaster_user_id) || item.banner_picture || null;
       const chatroomId = channel?.chatroom_id;
 
       let realStartedAt = now;
@@ -461,6 +481,7 @@ const TWITCH_GQL_QUERY = `
   query GetStreamer($login: String!) {
     user(login: $login) {
       id
+      profileImageURL(width: 300)
       stream {
         id
         title
@@ -509,6 +530,7 @@ async function pollTwitchBatch(channels) {
       const viewers = isLive ? (Number(stream.viewersCount) || 0) : 0;
       const category = isLive ? (stream.game?.name || 'General') : null;
       const title = isLive ? (stream.title || '') : null;
+      const avatarUrl = user?.profileImageURL || null;
 
       let realStartedAt = now;
       if (isLive && stream.createdAt) {
@@ -541,7 +563,7 @@ async function pollTwitchBatch(channels) {
             started_at: realStartedAt,
             peak_viewers: viewers
           });
-          active = { id: streamId, slug, platform: 'twitch', startedAt: realStartedAt, peak: viewers, viewers, category, title };
+          active = { id: streamId, slug, platform: 'twitch', startedAt: realStartedAt, peak: viewers, viewers, category, title, avatarUrl };
           memoryState.activeStreams.set(key, active);
           console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
           subscribeTwitchChat(slug);
@@ -550,6 +572,7 @@ async function pollTwitchBatch(channels) {
           active.peak = Math.max(active.peak, viewers);
           active.category = category;
           active.title = title;
+          if (avatarUrl) active.avatarUrl = avatarUrl;
           if (realStartedAt && active.startedAt !== realStartedAt) {
             active.startedAt = realStartedAt;
           }
