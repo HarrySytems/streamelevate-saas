@@ -3,17 +3,25 @@ const path = require('path');
 const Pusher = require('pusher-js');
 const { db, stmts, recordAudience, recordChat, seedChannels } = require('./db');
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 // In-memory sliding window state for ultra-fast API responses
 const memoryState = {
-  channels: new Map(),       // slug -> channel metadata
+  channels: new Map(),       // key (platform_slug) -> channel metadata
   activeStreams: new Map(),  // key (platform_slug) -> { streamId, viewers, peak, ... }
-  chatWindows: new Map(),    // key -> array of { time, senderId }
+  chatWindows: new Map(),    // key -> array of { t, senderId }
   pusherSubscribed: new Map()// chatroomId -> channelSubscription
 };
 
 let pusher = null;
-let pollTimer = null;
-let isPolling = false;
+let twitchWs = null;
+const twitchSubscribed = new Set();
+let twitchReconnectTimer = null;
+
+let fastPollTimer = null;
+let fullSweepTimer = null;
+let isFullSweepRunning = false;
+let isFastPollRunning = false;
 
 function loadStreamersDatabase() {
   const localDb = path.join(__dirname, '..', 'data', 'streamers_database.json');
@@ -53,13 +61,41 @@ function loadStreamersDatabase() {
       all.forEach(ch => {
         memoryState.channels.set(`${ch.platform}_${ch.slug.toLowerCase()}`, ch);
       });
-      console.log(`[StreamElevate Colector] Base de datos sincronizada: ${all.length} canales cargados.`);
+
+      // Restaurar streams activos desde SQLite si el proceso se reinició
+      try {
+        const activeRows = db.prepare("SELECT * FROM streams WHERE status = 'live'").all();
+        activeRows.forEach(row => {
+          const key = `${row.platform}_${row.slug.toLowerCase()}`;
+          memoryState.activeStreams.set(key, {
+            id: row.id,
+            slug: row.slug.toLowerCase(),
+            platform: row.platform,
+            startedAt: row.started_at,
+            peak: row.peak_viewers || 0,
+            viewers: row.peak_viewers || 0,
+            category: row.category,
+            title: row.title
+          });
+          if (row.platform === 'twitch') {
+            twitchSubscribed.add(row.slug.toLowerCase());
+          }
+        });
+        console.log(`[StreamElevate Colector] Estado activo restaurado: ${activeRows.length} streams en curso reanudados.`);
+      } catch (e) {
+        console.warn('[StreamElevate Colector] Aviso restaurando streams:', e.message);
+      }
+
+      console.log(`[StreamElevate Colector] Base de datos sincronizada: ${all.length} canales cargados (${all.filter(c => c.platform === 'kick').length} Kick, ${all.filter(c => c.platform === 'twitch').length} Twitch).`);
     } catch (e) {
       console.error('[StreamElevate Colector] Error leyendo streamers_database.json:', e.message);
     }
   }
 }
 
+// ==========================================
+// 1. KICK CHAT (PUSHER WEBSOCKET)
+// ==========================================
 function initPusher() {
   const key = process.env.KICK_PUSHER_KEY || '32cbd69e4b950bf97679';
   const cluster = process.env.KICK_PUSHER_CLUSTER || 'us2';
@@ -70,7 +106,17 @@ function initPusher() {
   });
 
   pusher.connection.bind('connected', () => {
-    console.log('[StreamElevate Colector] Pusher WebSocket conectado al cluster', cluster);
+    console.log('[StreamElevate Colector] Pusher WebSocket (Kick) conectado al cluster', cluster);
+    // Auto-suscribir a streams de Kick que ya estén activos
+    for (const [key, active] of memoryState.activeStreams.entries()) {
+      if (active.platform === 'kick') {
+        const ch = memoryState.channels.get(key);
+        const chatroomId = ch?.chatroom_id || ch?.channel_id;
+        if (chatroomId) {
+          subscribeChatroom(chatroomId, active.slug);
+        }
+      }
+    }
   });
 
   pusher.connection.bind('error', (err) => {
@@ -101,20 +147,18 @@ function subscribeChatroom(chatroomId, slug) {
       timestamp: Date.parse(data.created_at) || now
     });
 
-    // Registrar en ventana deslizante de 60 segundos
     if (!memoryState.chatWindows.has(key)) {
       memoryState.chatWindows.set(key, []);
     }
     const window = memoryState.chatWindows.get(key);
     window.push({ t: now, senderId: data.sender?.id });
     
-    // Purgar mensajes más viejos de 60s
     while (window.length > 0 && now - window[0].t > 60000) {
       window.shift();
     }
   });
 
-  console.log(`[StreamElevate Colector] Suscrito a chat en vivo: ${slug} (${channelName})`);
+  console.log(`[StreamElevate Colector] Suscrito a Kick Chat en vivo: ${slug} (${channelName})`);
 }
 
 function unsubscribeChatroom(chatroomId) {
@@ -123,6 +167,121 @@ function unsubscribeChatroom(chatroomId) {
   memoryState.pusherSubscribed.delete(chatroomId);
 }
 
+// ==========================================
+// 2. TWITCH CHAT (IRC WEBSOCKET - 0 HTTP CALLS)
+// ==========================================
+function initTwitchIrc() {
+  if (twitchWs && (twitchWs.readyState === 0 || twitchWs.readyState === 1)) return;
+
+  const randNick = 'justinfan' + Math.floor(Math.random() * 80000 + 10000);
+  try {
+    twitchWs = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
+
+    twitchWs.onopen = () => {
+      console.log('[StreamElevate Colector] Twitch IRC WebSocket conectado como', randNick);
+      twitchWs.send('CAP REQ :twitch.tv/tags\r\n');
+      twitchWs.send(`NICK ${randNick}\r\n`);
+      for (const slug of twitchSubscribed) {
+        twitchWs.send(`JOIN #${slug}\r\n`);
+      }
+    };
+
+    twitchWs.onmessage = (event) => {
+      const data = event.data.toString();
+      const lines = data.split('\r\n');
+      for (const line of lines) {
+        if (!line) continue;
+        if (line.startsWith('PING ')) {
+          twitchWs.send('PONG :tmi.twitch.tv\r\n');
+          continue;
+        }
+
+        const idxPrivmsg = line.indexOf(' PRIVMSG ');
+        if (idxPrivmsg !== -1) {
+          const prefix = line.slice(0, idxPrivmsg);
+          const rest = line.slice(idxPrivmsg + 9);
+          const channel = rest.slice(0, rest.indexOf(' ')).replace('#', '').toLowerCase();
+          const text = rest.slice(rest.indexOf(' :') + 2);
+
+          const tags = {};
+          if (prefix.startsWith('@')) {
+            const rawTags = prefix.slice(1, prefix.indexOf(' '));
+            for (const item of rawTags.split(';')) {
+              const eq = item.indexOf('=');
+              if (eq !== -1) tags[item.slice(0, eq)] = item.slice(eq + 1);
+            }
+          }
+
+          const now = Date.now();
+          const key = `twitch_${channel}`;
+          const active = memoryState.activeStreams.get(key);
+
+          const msgId = tags['id'] || `twitch_${now}_${Math.random().toString(36).slice(2, 7)}`;
+          const senderId = tags['user-id'] || '';
+          const senderUsername = tags['display-name'] || 'Anónimo';
+
+          recordChat({
+            message_id: msgId,
+            stream_id: active ? active.id : null,
+            platform: 'twitch',
+            slug: channel,
+            sender_id: String(senderId),
+            sender_username: senderUsername,
+            content: text || '',
+            timestamp: now
+          });
+
+          if (!memoryState.chatWindows.has(key)) {
+            memoryState.chatWindows.set(key, []);
+          }
+          const window = memoryState.chatWindows.get(key);
+          window.push({ t: now, senderId });
+
+          while (window.length > 0 && now - window[0].t > 60000) {
+            window.shift();
+          }
+        }
+      }
+    };
+
+    twitchWs.onerror = (err) => {
+      console.warn('[StreamElevate Colector] Twitch IRC WebSocket aviso:', err?.message || 'Error de socket');
+    };
+
+    twitchWs.onclose = () => {
+      console.warn('[StreamElevate Colector] Twitch IRC WebSocket cerrado. Reconectando en 3s...');
+      if (!twitchReconnectTimer) {
+        twitchReconnectTimer = setTimeout(() => {
+          twitchReconnectTimer = null;
+          initTwitchIrc();
+        }, 3000);
+      }
+    };
+  } catch (err) {
+    console.error('[StreamElevate Colector] Error iniciando Twitch IRC:', err.message);
+  }
+}
+
+function subscribeTwitchChat(slug) {
+  const norm = slug.toLowerCase();
+  twitchSubscribed.add(norm);
+  if (twitchWs && twitchWs.readyState === 1) {
+    twitchWs.send(`JOIN #${norm}\r\n`);
+    console.log(`[StreamElevate Colector] Suscrito a Twitch Chat en vivo: #${norm}`);
+  }
+}
+
+function unsubscribeTwitchChat(slug) {
+  const norm = slug.toLowerCase();
+  twitchSubscribed.delete(norm);
+  if (twitchWs && twitchWs.readyState === 1) {
+    twitchWs.send(`PART #${norm}\r\n`);
+  }
+}
+
+// ==========================================
+// 3. KICK POLLING (ESPACIADO CONTROLADO 150ms)
+// ==========================================
 async function pollKickChannel(channel) {
   const slug = channel.slug.toLowerCase();
   const key = `kick_${slug}`;
@@ -132,7 +291,7 @@ async function pollKickChannel(channel) {
   try {
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'application/json'
       }
     });
@@ -150,6 +309,7 @@ async function pollKickChannel(channel) {
     const title = isLive ? (data.livestream.session_title || '') : null;
 
     stmts.updateChannelLive.run({
+      platform: 'kick',
       slug,
       is_live: isLive ? 1 : 0,
       current_viewers: viewers,
@@ -170,7 +330,6 @@ async function pollKickChannel(channel) {
 
       let active = memoryState.activeStreams.get(key);
       if (!active) {
-        // Iniciar nueva sesión de stream con el timestamp real de inicio de Kick
         const streamId = `kick_${slug}_${realStartedAt}`;
         stmts.createStream.run({
           id: streamId,
@@ -183,9 +342,8 @@ async function pollKickChannel(channel) {
         });
         active = { id: streamId, slug, platform: 'kick', startedAt: realStartedAt, peak: viewers, viewers, category, title };
         memoryState.activeStreams.set(key, active);
-        console.log(`[StreamElevate Colector] ¡STREAMER EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
+        console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
         
-        // Conectar Pusher de inmediato
         if (chatroomId) {
           subscribeChatroom(chatroomId, slug);
         }
@@ -198,35 +356,32 @@ async function pollKickChannel(channel) {
           active.startedAt = realStartedAt;
         }
         if (active.offlineSince) {
-          console.log(`[StreamElevate Colector] ¡Streamer reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
+          console.log(`[StreamElevate Colector] ¡Streamer Kick reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
           delete active.offlineSince;
         }
       }
 
-      // Guardar muestra de audiencia en SQLite
       recordAudience(active.id, 'kick', slug, now, viewers, category, title);
     } else {
       const active = memoryState.activeStreams.get(key);
       if (active) {
-        // Período de gracia para microcaídas IRL (5 minutos = 300,000 ms)
+        // Tolerancia a microcortes IRL (5 minutos = 300,000 ms)
         if (!active.offlineSince) {
           active.offlineSince = now;
-          console.log(`[StreamElevate Colector] Señal no detectada de ${slug}. Iniciando período de gracia (5 min por posible microcaída de WiFi/IRL)...`);
+          console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Kick). Iniciando gracia (5 min por posible microcaída de WiFi/IRL)...`);
           return;
         }
 
         const offlineDurationMs = now - active.offlineSince;
         if (offlineDurationMs < 300000) {
-          // Aún dentro del período de tolerancia por caída de conexión
           return;
         }
 
         // Más de 5 minutos offline continuo: el directo concluyó oficialmente
-        console.log(`[StreamElevate Colector] Directo finalizado oficialmente: ${slug} (offline > 5min). Calculando estadísticas finales...`);
+        console.log(`[StreamElevate Colector] Directo Kick finalizado oficialmente: ${slug} (offline > 5min).`);
         const stats = stmts.getChatStats.get(active.id);
         const samples = stmts.getAudienceSamples.all(active.id);
 
-        // Promedio ponderado por tiempo (integral de trapecios)
         let weightedSum = 0;
         let totalDuration = 0;
         for (let i = 0; i < samples.length - 1; i++) {
@@ -255,6 +410,9 @@ async function pollKickChannel(channel) {
   }
 }
 
+// ==========================================
+// 4. TWITCH BATCH GQL (1 PAGO HTTP PARA MÚLTIPLES CANALES)
+// ==========================================
 const TWITCH_GQL_QUERY = `
   query GetStreamer($login: String!) {
     user(login: $login) {
@@ -273,10 +431,13 @@ const TWITCH_GQL_QUERY = `
   }
 `;
 
-async function pollTwitchChannel(channel) {
-  const slug = channel.slug.toLowerCase();
-  const key = `twitch_${slug}`;
+async function pollTwitchBatch(channels) {
+  if (!channels || channels.length === 0) return;
   const now = Date.now();
+  const body = channels.map(ch => ({
+    query: TWITCH_GQL_QUERY,
+    variables: { login: ch.slug.toLowerCase() }
+  }));
 
   try {
     const res = await fetch('https://gql.twitch.tv/gql', {
@@ -285,149 +446,211 @@ async function pollTwitchChannel(channel) {
         'Content-Type': 'application/json',
         'Client-ID': 'kimne78kx3ncx6brgo4mv6wki5h1ko'
       },
-      body: JSON.stringify({
-        query: TWITCH_GQL_QUERY,
-        variables: { login: slug }
-      })
+      body: JSON.stringify(body)
     });
 
     if (!res.ok) return;
-    const data = await res.json();
-    const user = data.data?.user;
-    const stream = user?.stream;
-    const isLive = Boolean(stream && stream.type === 'live');
-    const viewers = isLive ? (Number(stream.viewersCount) || 0) : 0;
-    const category = isLive ? (stream.game?.name || 'General') : null;
-    const title = isLive ? (stream.title || '') : null;
+    const batchData = await res.json();
+    if (!Array.isArray(batchData)) return;
 
-    let realStartedAt = now;
-    if (isLive && stream.createdAt) {
-      const parsed = Date.parse(stream.createdAt);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        realStartedAt = parsed;
+    for (let i = 0; i < batchData.length; i++) {
+      const item = batchData[i];
+      const channel = channels[i];
+      const slug = channel.slug.toLowerCase();
+      const key = `twitch_${slug}`;
+
+      const user = item?.data?.user;
+      const stream = user?.stream;
+      const isLive = Boolean(stream && stream.type === 'live');
+      const viewers = isLive ? (Number(stream.viewersCount) || 0) : 0;
+      const category = isLive ? (stream.game?.name || 'General') : null;
+      const title = isLive ? (stream.title || '') : null;
+
+      let realStartedAt = now;
+      if (isLive && stream.createdAt) {
+        const parsed = Date.parse(stream.createdAt);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          realStartedAt = parsed;
+        }
       }
-    }
 
-    stmts.updateChannelLive.run({
-      slug,
-      is_live: isLive ? 1 : 0,
-      current_viewers: viewers,
-      current_category: category,
-      current_title: title,
-      last_checked_at: now
-    });
+      stmts.updateChannelLive.run({
+        platform: 'twitch',
+        slug,
+        is_live: isLive ? 1 : 0,
+        current_viewers: viewers,
+        current_category: category,
+        current_title: title,
+        last_checked_at: now
+      });
 
-    if (isLive) {
-      let active = memoryState.activeStreams.get(key);
-      if (!active) {
-        const streamId = `twitch_${slug}_${realStartedAt}`;
-        stmts.createStream.run({
-          id: streamId,
-          platform: 'twitch',
-          slug,
-          title,
-          category,
-          started_at: realStartedAt,
-          peak_viewers: viewers
-        });
-        active = { id: streamId, slug, platform: 'twitch', startedAt: realStartedAt, peak: viewers, viewers, category, title };
-        memoryState.activeStreams.set(key, active);
-        console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
+      if (isLive) {
+        let active = memoryState.activeStreams.get(key);
+        if (!active) {
+          const streamId = `twitch_${slug}_${realStartedAt}`;
+          stmts.createStream.run({
+            id: streamId,
+            platform: 'twitch',
+            slug,
+            title,
+            category,
+            started_at: realStartedAt,
+            peak_viewers: viewers
+          });
+          active = { id: streamId, slug, platform: 'twitch', startedAt: realStartedAt, peak: viewers, viewers, category, title };
+          memoryState.activeStreams.set(key, active);
+          console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
+          subscribeTwitchChat(slug);
+        } else {
+          active.viewers = viewers;
+          active.peak = Math.max(active.peak, viewers);
+          active.category = category;
+          active.title = title;
+          if (realStartedAt && active.startedAt !== realStartedAt) {
+            active.startedAt = realStartedAt;
+          }
+          if (active.offlineSince) {
+            console.log(`[StreamElevate Colector] ¡Twitch streamer reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
+            delete active.offlineSince;
+          }
+        }
+
+        recordAudience(active.id, 'twitch', slug, now, viewers, category, title);
       } else {
-        active.viewers = viewers;
-        active.peak = Math.max(active.peak, viewers);
-        active.category = category;
-        active.title = title;
-        if (realStartedAt && active.startedAt !== realStartedAt) {
-          active.startedAt = realStartedAt;
-        }
-        if (active.offlineSince) {
-          delete active.offlineSince;
-        }
-      }
+        const active = memoryState.activeStreams.get(key);
+        if (active) {
+          if (!active.offlineSince) {
+            active.offlineSince = now;
+            console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Twitch). Iniciando gracia (5 min por posible microcaída de WiFi/IRL)...`);
+            continue;
+          }
 
-      recordAudience(active.id, 'twitch', slug, now, viewers, category, title);
-    } else {
-      const active = memoryState.activeStreams.get(key);
-      if (active) {
-        if (!active.offlineSince) {
-          active.offlineSince = now;
-          return;
+          if (now - active.offlineSince < 300000) {
+            continue;
+          }
+
+          console.log(`[StreamElevate Colector] Directo Twitch finalizado: ${slug} (offline > 5min).`);
+          const stats = stmts.getChatStats.get(active.id);
+          const samples = stmts.getAudienceSamples.all(active.id);
+
+          let weightedSum = 0;
+          let totalDuration = 0;
+          for (let s = 0; s < samples.length - 1; s++) {
+            const dt = (samples[s + 1].timestamp - samples[s].timestamp) / 1000;
+            weightedSum += ((samples[s].viewers + samples[s + 1].viewers) / 2) * dt;
+            totalDuration += dt;
+          }
+          const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : active.viewers;
+
+          stmts.closeStream.run({
+            id: active.id,
+            ended_at: active.offlineSince || now,
+            avg_viewers: Math.round(avgViewers),
+            total_messages: stats?.total_messages || 0,
+            unique_chatters: stats?.unique_chatters || 0
+          });
+
+          memoryState.activeStreams.delete(key);
+          unsubscribeTwitchChat(slug);
         }
-        if (now - active.offlineSince < 300000) {
-          return;
-        }
-
-        const stats = stmts.getChatStats.get(active.id);
-        const samples = stmts.getAudienceSamples.all(active.id);
-
-        let weightedSum = 0;
-        let totalDuration = 0;
-        for (let i = 0; i < samples.length - 1; i++) {
-          const dt = (samples[i + 1].timestamp - samples[i].timestamp) / 1000;
-          weightedSum += ((samples[i].viewers + samples[i + 1].viewers) / 2) * dt;
-          totalDuration += dt;
-        }
-        const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : active.viewers;
-
-        stmts.closeStream.run({
-          id: active.id,
-          ended_at: active.offlineSince || now,
-          avg_viewers: Math.round(avgViewers),
-          total_messages: stats?.total_messages || 0,
-          unique_chatters: stats?.unique_chatters || 0
-        });
-
-        memoryState.activeStreams.delete(key);
       }
     }
-  } catch (err) {}
+  } catch (err) {
+    console.error('[StreamElevate Colector] Error en pollTwitchBatch:', err.message);
+  }
 }
 
-async function runPollCycle() {
-  if (isPolling) return;
-  isPolling = true;
+// ==========================================
+// 5. CADENCIA DUAL INTELIGENTE (CERO BLOQUEOS)
+// ==========================================
+async function runFastCycle() {
+  if (isFastPollRunning) return;
+  isFastPollRunning = true;
 
   try {
-    const kickChannels = Array.from(memoryState.channels.values()).filter(c => c.platform === 'kick');
-    const twitchChannels = Array.from(memoryState.channels.values()).filter(c => c.platform === 'twitch');
+    const activeKeys = Array.from(memoryState.activeStreams.keys());
+    if (activeKeys.length === 0) return;
 
-    // Sondeo balanceado de Kick (lotes de 6)
-    for (let i = 0; i < kickChannels.length; i += 6) {
-      const chunk = kickChannels.slice(i, i + 6);
-      await Promise.all(chunk.map(ch => pollKickChannel(ch)));
+    const activeTwitch = [];
+    const activeKick = [];
+
+    for (const key of activeKeys) {
+      const active = memoryState.activeStreams.get(key);
+      if (!active) continue;
+      const channel = memoryState.channels.get(key);
+      if (!channel) continue;
+      if (active.platform === 'twitch') activeTwitch.push(channel);
+      else if (active.platform === 'kick') activeKick.push(channel);
     }
 
-    // Sondeo balanceado de Twitch (lotes de 8)
-    for (let i = 0; i < twitchChannels.length; i += 8) {
-      const chunk = twitchChannels.slice(i, i + 8);
-      await Promise.all(chunk.map(ch => pollTwitchChannel(ch)));
+    // Twitch: 1 sola petición HTTP para todos los streams activos a la vez
+    if (activeTwitch.length > 0) {
+      await pollTwitchBatch(activeTwitch);
+    }
+
+    // Kick: espaciado de 150ms para evitar cualquier ráfaga hacia Cloudflare
+    for (const ch of activeKick) {
+      await pollKickChannel(ch);
+      await sleep(150);
     }
   } finally {
-    isPolling = false;
+    isFastPollRunning = false;
+  }
+}
+
+async function runFullSweep() {
+  if (isFullSweepRunning) return;
+  isFullSweepRunning = true;
+
+  try {
+    const twitchChannels = Array.from(memoryState.channels.values()).filter(c => c.platform === 'twitch');
+    const kickChannels = Array.from(memoryState.channels.values()).filter(c => c.platform === 'kick');
+
+    // 1. Twitch: lotes de 20 (máximo 2 peticiones HTTP para consultar todos los 35 canales)
+    for (let i = 0; i < twitchChannels.length; i += 20) {
+      const chunk = twitchChannels.slice(i, i + 20);
+      await pollTwitchBatch(chunk);
+      if (i + 20 < twitchChannels.length) await sleep(200);
+    }
+
+    // 2. Kick: 1 canal cada 150ms (28 canales = ~4.2s distribuidos suavemente)
+    for (const ch of kickChannels) {
+      await pollKickChannel(ch);
+      await sleep(150);
+    }
+  } finally {
+    isFullSweepRunning = false;
   }
 }
 
 function startCollector() {
   loadStreamersDatabase();
   initPusher();
+  initTwitchIrc();
 
-  const interval = Number(process.env.POLL_INTERVAL_MS) || 30000;
-  console.log(`[StreamElevate Colector] Ciclo de sondeo iniciado cada ${interval / 1000}s`);
-  
-  // Primer ciclo inmediato
-  runPollCycle();
-  pollTimer = setInterval(runPollCycle, interval);
+  // Primer barrido completo al arrancar
+  runFullSweep();
+
+  // Fast cycle cada 15 segundos para streams en directo (viewers instantáneos)
+  fastPollTimer = setInterval(runFastCycle, 15000);
+
+  // Full sweep cada 45 segundos para detectar inicios/apagados de streams
+  fullSweepTimer = setInterval(runFullSweep, 45000);
+  console.log('[StreamElevate Colector] Cadencia Inteligente Dual iniciada (Fast: 15s en vivo, Full: 45s general)');
 }
 
 function stopCollector() {
-  if (pollTimer) clearInterval(pollTimer);
+  if (fastPollTimer) clearInterval(fastPollTimer);
+  if (fullSweepTimer) clearInterval(fullSweepTimer);
   if (pusher) pusher.disconnect();
+  if (twitchWs) twitchWs.close();
 }
 
 function getTelemetrySnapshot(slug, platform = 'kick') {
-  const key = `${platform}_${slug.toLowerCase()}`;
-  const channel = stmts.getChannel.get(slug.toLowerCase());
+  const normSlug = slug.toLowerCase();
+  const normPlatform = platform.toLowerCase();
+  const key = `${normPlatform}_${normSlug}`;
+  const channel = stmts.getChannel.get(normPlatform, normSlug) || stmts.getChannelBySlug.get(normSlug);
   const active = memoryState.activeStreams.get(key);
   const window = memoryState.chatWindows.get(key) || [];
   
@@ -437,8 +660,8 @@ function getTelemetrySnapshot(slug, platform = 'kick') {
   const uniqueChattersSet = new Set(recentChats.map(m => m.senderId).filter(Boolean));
 
   return {
-    slug: slug.toLowerCase(),
-    platform,
+    slug: normSlug,
+    platform: normPlatform,
     is_live: Boolean(active && !active.offlineSince),
     is_reconnecting: Boolean(active && active.offlineSince),
     stream_id: active ? active.id : null,
@@ -462,5 +685,7 @@ module.exports = {
   getTelemetrySnapshot,
   memoryState,
   subscribeChatroom,
-  pollKickChannel
+  pollKickChannel,
+  pollTwitchBatch,
+  twitchSubscribed
 };

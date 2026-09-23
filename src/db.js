@@ -17,7 +17,7 @@ db.pragma('synchronous = NORMAL');
 function initDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS channels (
-      slug TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
       platform TEXT NOT NULL,
       username TEXT,
       channel_id INTEGER,
@@ -26,7 +26,8 @@ function initDb() {
       current_viewers INTEGER DEFAULT 0,
       current_category TEXT,
       current_title TEXT,
-      last_checked_at INTEGER
+      last_checked_at INTEGER,
+      PRIMARY KEY (platform, slug)
     );
 
     CREATE TABLE IF NOT EXISTS streams (
@@ -69,6 +70,34 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_chat_stream ON chat_messages(stream_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_chat_sender ON chat_messages(stream_id, sender_id);
   `);
+
+  // Migration check: ensure composite PRIMARY KEY (platform, slug)
+  try {
+    const info = db.pragma('table_info(channels)');
+    const pkCols = info.filter(c => c.pk > 0);
+    if (pkCols.length === 1 && pkCols[0].name === 'slug') {
+      db.exec(`
+        CREATE TABLE channels_migration (
+          slug TEXT NOT NULL,
+          platform TEXT NOT NULL,
+          username TEXT,
+          channel_id INTEGER,
+          chatroom_id INTEGER,
+          is_live INTEGER DEFAULT 0,
+          current_viewers INTEGER DEFAULT 0,
+          current_category TEXT,
+          current_title TEXT,
+          last_checked_at INTEGER,
+          PRIMARY KEY (platform, slug)
+        );
+        INSERT OR IGNORE INTO channels_migration SELECT * FROM channels;
+        DROP TABLE channels;
+        ALTER TABLE channels_migration RENAME TO channels;
+      `);
+    }
+  } catch (e) {
+    console.warn('[DB] Aviso migracion canales:', e.message);
+  }
 }
 
 initDb();
@@ -78,7 +107,7 @@ const stmts = {
   upsertChannel: db.prepare(`
     INSERT INTO channels (slug, platform, username, channel_id, chatroom_id)
     VALUES (@slug, @platform, @username, @channel_id, @chatroom_id)
-    ON CONFLICT(slug) DO UPDATE SET
+    ON CONFLICT(platform, slug) DO UPDATE SET
       channel_id = coalesce(excluded.channel_id, channels.channel_id),
       chatroom_id = coalesce(excluded.chatroom_id, channels.chatroom_id),
       username = coalesce(excluded.username, channels.username)
@@ -91,12 +120,14 @@ const stmts = {
       current_category = @current_category,
       current_title = @current_title,
       last_checked_at = @last_checked_at
-    WHERE slug = @slug
+    WHERE platform = @platform AND slug = @slug
   `),
 
   getAllChannels: db.prepare(`SELECT * FROM channels ORDER BY platform, slug`),
   
-  getChannel: db.prepare(`SELECT * FROM channels WHERE slug = ?`),
+  getChannel: db.prepare(`SELECT * FROM channels WHERE platform = ? AND slug = ?`),
+
+  getChannelBySlug: db.prepare(`SELECT * FROM channels WHERE slug = ? LIMIT 1`),
 
   getActiveStream: db.prepare(`
     SELECT * FROM streams WHERE platform = ? AND slug = ? AND status = 'live' ORDER BY started_at DESC LIMIT 1
@@ -105,6 +136,11 @@ const stmts = {
   createStream: db.prepare(`
     INSERT INTO streams (id, platform, slug, title, category, started_at, peak_viewers, status)
     VALUES (@id, @platform, @slug, @title, @category, @started_at, @peak_viewers, 'live')
+    ON CONFLICT(id) DO UPDATE SET
+      title = coalesce(excluded.title, streams.title),
+      category = coalesce(excluded.category, streams.category),
+      peak_viewers = max(streams.peak_viewers, excluded.peak_viewers),
+      status = 'live'
   `),
 
   updateStreamStats: db.prepare(`

@@ -1,12 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const { db, stmts, getStreamDetails } = require('./db');
-const { getTelemetrySnapshot, memoryState } = require('./collector');
+const { getTelemetrySnapshot, memoryState, twitchSubscribed } = require('./collector');
 
 // GET /api/v1/health
 router.get('/health', (req, res) => {
   const activeStreamsCount = memoryState.activeStreams.size;
   const subscribedPusherCount = memoryState.pusherSubscribed.size;
+  const subscribedTwitchCount = twitchSubscribed ? twitchSubscribed.size : 0;
   const channelCount = db.prepare(`SELECT COUNT(*) as c FROM channels`).get().c;
   const totalMessages = db.prepare(`SELECT COUNT(*) as c FROM chat_messages`).get().c;
   
@@ -17,6 +18,7 @@ router.get('/health', (req, res) => {
     channels_tracked: channelCount,
     streams_live: activeStreamsCount,
     pusher_chatrooms_active: subscribedPusherCount,
+    twitch_irc_active: subscribedTwitchCount,
     total_messages_recorded: totalMessages,
     timestamp: new Date().toISOString()
   });

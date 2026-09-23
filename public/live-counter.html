@@ -295,10 +295,13 @@
     </div>
     <div class="channel-selector">
       <button class="channel-btn active" onclick="switchChannel('brunenger', 'kick')">Brunenger (KICK)</button>
-      <button class="channel-btn" onclick="switchChannel('mrchoco', 'kick')">MrChoco (KICK)</button>
-      <button class="channel-btn" onclick="switchChannel('auronplay', 'twitch')">Auronplay (TWITCH)</button>
+      <button class="channel-btn" onclick="switchChannel('westcol', 'kick')">Westcol (KICK)</button>
+      <button class="channel-btn" onclick="switchChannel('spreen', 'kick')">Spreen (KICK)</button>
       <button class="channel-btn" onclick="switchChannel('rubius', 'twitch')">Rubius (TWITCH)</button>
       <button class="channel-btn" onclick="switchChannel('elxokas', 'twitch')">Xokas (TWITCH)</button>
+      <select id="channelDropdown" class="channel-btn" style="background:#1e293b; border-color:#475569; color:#f8fafc;" onchange="onDropdownSelect(this.value)">
+        <option value="">-- Todos los 63 canales --</option>
+      </select>
     </div>
   </header>
 
@@ -498,10 +501,14 @@
       const h = canvas.height;
       const step = w / (historyPoints.length - 1);
 
+      const isTwitch = (currentPlatform === 'twitch');
+      const strokeColor = isTwitch ? '#a970ff' : '#53fc18';
+      const gradColor = isTwitch ? 'rgba(169, 112, 255, 0.35)' : 'rgba(83, 252, 24, 0.35)';
+
       // Gradient area
       const grad = ctx.createLinearGradient(0, 0, 0, h);
-      grad.addColorStop(0, 'rgba(83, 252, 24, 0.35)');
-      grad.addColorStop(1, 'rgba(83, 252, 24, 0.0)');
+      grad.addColorStop(0, gradColor);
+      grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.beginPath();
       ctx.moveTo(0, h);
@@ -524,9 +531,9 @@
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
-      ctx.strokeStyle = '#53fc18';
+      ctx.strokeStyle = strokeColor;
       ctx.lineWidth = 2.5;
-      ctx.shadowColor = '#53fc18';
+      ctx.shadowColor = strokeColor;
       ctx.shadowBlur = 8;
       ctx.stroke();
 
@@ -540,20 +547,57 @@
     }
 
     function switchChannel(slug, platform = 'kick') {
-      currentSlug = slug;
-      currentPlatform = platform;
+      currentSlug = slug.toLowerCase();
+      currentPlatform = platform.toLowerCase();
       previousViewers = 0;
       historyPoints.length = 0;
       document.querySelectorAll('.channel-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.textContent.toLowerCase().includes(slug));
+        if (btn.tagName === 'BUTTON') {
+          btn.classList.toggle('active', btn.textContent.toLowerCase().includes(currentSlug));
+        }
       });
       fetchStreamerData();
     }
 
+    function onDropdownSelect(val) {
+      if (!val) return;
+      const [plat, slug] = val.split(':');
+      switchChannel(slug, plat);
+    }
+
+    async function loadChannelsDropdown() {
+      try {
+        const res = await fetch('/api/v1/channels');
+        if (!res.ok) return;
+        const data = await res.json();
+        const select = document.getElementById('channelDropdown');
+        if (!select || !Array.isArray(data.channels)) return;
+
+        // Ordenar: primero los que están EN VIVO con más viewers
+        const sorted = data.channels.sort((a, b) => {
+          if (a.is_live && !b.is_live) return -1;
+          if (!a.is_live && b.is_live) return 1;
+          return (b.viewers || 0) - (a.viewers || 0);
+        });
+
+        select.innerHTML = '<option value="">-- Cambiar Streamer (63 canales) --</option>';
+        sorted.forEach(ch => {
+          const opt = document.createElement('option');
+          opt.value = `${ch.platform}:${ch.slug}`;
+          const liveTag = ch.is_live ? `🔴 [LIVE: ${ch.viewers?.toLocaleString() || 0}]` : '⚪ [OFFLINE]';
+          opt.textContent = `${liveTag} ${ch.username} (${ch.platform.toUpperCase()})`;
+          select.appendChild(opt);
+        });
+      } catch (e) {}
+    }
+
     // Inicializar y bucle cada 3 segundos
+    loadChannelsDropdown();
+    setInterval(loadChannelsDropdown, 20000);
     fetchStreamerData();
     setInterval(fetchStreamerData, 3000);
     window.addEventListener('resize', drawSparkline);
+  </script>
   </script>
 </body>
 </html>
