@@ -413,8 +413,9 @@
       const peak = Number(data.peak_viewers) || viewers;
 
       // Actualizar nombres y títulos
+      const platName = (data.platform || 'kick').toUpperCase();
       document.getElementById('streamerName').textContent = data.slug.toUpperCase();
-      document.getElementById('streamerHandle').textContent = `@${data.slug} • Kick Streaming`;
+      document.getElementById('streamerHandle').textContent = `@${data.slug} • ${platName} Streaming`;
       document.getElementById('streamTitle').textContent = data.title || (isLive ? 'Emisión en directo' : 'Canal fuera de línea');
       document.getElementById('avatarFallback').textContent = data.slug[0].toUpperCase();
 
