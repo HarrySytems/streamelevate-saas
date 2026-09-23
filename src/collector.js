@@ -280,133 +280,177 @@ function unsubscribeTwitchChat(slug) {
 }
 
 // ==========================================
-// 3. KICK POLLING (ESPACIADO CONTROLADO 150ms)
+// 3. KICK OFFICIAL OAUTH API (api.kick.com - CERO BLOQUEOS)
 // ==========================================
-async function pollKickChannel(channel) {
-  const slug = channel.slug.toLowerCase();
-  const key = `kick_${slug}`;
-  const now = Date.now();
-  const url = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`;
+let kickToken = null;
+let kickTokenExpiresAt = 0;
+
+async function getKickAppToken() {
+  if (kickToken && Date.now() < kickTokenExpiresAt - 60000) {
+    return kickToken;
+  }
+  const clientId = process.env.KICK_CLIENT_ID || '01M35HMD769KDSDKJNZFQR6D40';
+  const clientSecret = process.env.KICK_CLIENT_SECRET || '5b495a5faa45c5b25ada0076c2a70eeb6cc5477b15f299116c88568fa1a2ae59';
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch('https://id.kick.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: clientId,
+        client_secret: clientSecret
+      }),
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!res.ok) throw new Error('OAuth Kick failed: ' + res.status);
+    const data = await res.json();
+    kickToken = data.access_token;
+    kickTokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+    return kickToken;
+  } catch (err) {
+    console.error('[StreamElevate Colector] Error obteniendo Kick OAuth token:', err.message);
+    return null;
+  }
+}
+
+async function pollKickBatch(channels) {
+  if (!channels || channels.length === 0) return;
+  const token = await getKickAppToken();
+  if (!token) return;
+
+  const slugs = channels.map(c => c.slug.toLowerCase());
+  const queryStr = slugs.map(s => 'slug=' + encodeURIComponent(s)).join('&');
+  const now = Date.now();
+
+  try {
+    const res = await fetch('https://api.kick.com/public/v1/channels?' + queryStr, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Authorization': 'Bearer ' + token,
         'Accept': 'application/json'
-      }
+      },
+      signal: AbortSignal.timeout(10000)
     });
 
     if (!res.ok) {
-      if (res.status === 404) return;
+      console.warn('[StreamElevate Colector] Kick API HTTP', res.status);
       return;
     }
 
-    const data = await res.json();
-    const chatroomId = data.chatroom?.id || channel.chatroom_id;
-    const isLive = Boolean(data.livestream && data.livestream.is_live !== false);
-    const viewers = isLive ? (data.livestream.viewer_count || 0) : 0;
-    const category = isLive ? (data.livestream.categories?.[0]?.name || 'General') : null;
-    const title = isLive ? (data.livestream.session_title || '') : null;
+    const json = await res.json();
+    const items = Array.isArray(json.data) ? json.data : [];
 
-    stmts.updateChannelLive.run({
-      platform: 'kick',
-      slug,
-      is_live: isLive ? 1 : 0,
-      current_viewers: viewers,
-      current_category: category,
-      current_title: title,
-      last_checked_at: now
-    });
+    for (const item of items) {
+      const slug = (item.slug || '').toLowerCase();
+      if (!slug) continue;
+      const key = `kick_${slug}`;
+      const channel = memoryState.channels.get(key);
 
-    if (isLive) {
-      const kickStartTime = data.livestream?.start_time || data.livestream?.created_at;
+      const stream = item.stream;
+      const isLive = Boolean(stream && stream.is_live);
+      const viewers = isLive ? (Number(stream.viewer_count) || 0) : 0;
+      const category = isLive ? (item.category?.name || 'General') : null;
+      const title = isLive ? (item.stream_title || '') : null;
+      const avatarUrl = item.banner_picture || null;
+      const chatroomId = channel?.chatroom_id;
+
       let realStartedAt = now;
-      if (kickStartTime) {
-        const parsed = Date.parse(kickStartTime.includes('Z') ? kickStartTime : kickStartTime.replace(' ', 'T') + 'Z');
+      if (isLive && stream.start_time) {
+        const parsed = Date.parse(stream.start_time.includes('Z') ? stream.start_time : stream.start_time.replace(' ', 'T') + 'Z');
         if (Number.isFinite(parsed) && parsed > 0) {
           realStartedAt = parsed;
         }
       }
 
-      let active = memoryState.activeStreams.get(key);
-      if (!active) {
-        const streamId = `kick_${slug}_${realStartedAt}`;
-        stmts.createStream.run({
-          id: streamId,
-          platform: 'kick',
-          slug,
-          title,
-          category,
-          started_at: realStartedAt,
-          peak_viewers: viewers
-        });
-        active = { id: streamId, slug, platform: 'kick', startedAt: realStartedAt, peak: viewers, viewers, category, title };
-        memoryState.activeStreams.set(key, active);
-        console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
-        
-        if (chatroomId) {
-          subscribeChatroom(chatroomId, slug);
+      stmts.updateChannelLive.run({
+        platform: 'kick',
+        slug,
+        is_live: isLive ? 1 : 0,
+        current_viewers: viewers,
+        current_category: category,
+        current_title: title,
+        last_checked_at: now
+      });
+
+      if (isLive) {
+        let active = memoryState.activeStreams.get(key);
+        if (!active) {
+          const streamId = `kick_${slug}_${realStartedAt}`;
+          stmts.createStream.run({
+            id: streamId,
+            platform: 'kick',
+            slug,
+            title,
+            category,
+            started_at: realStartedAt,
+            peak_viewers: viewers
+          });
+          active = { id: streamId, slug, platform: 'kick', startedAt: realStartedAt, peak: viewers, viewers, category, title, avatarUrl };
+          memoryState.activeStreams.set(key, active);
+          console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
+
+          if (chatroomId) {
+            subscribeChatroom(chatroomId, slug);
+          }
+        } else {
+          active.viewers = viewers;
+          active.peak = Math.max(active.peak, viewers);
+          active.category = category;
+          active.title = title;
+          active.avatarUrl = avatarUrl;
+          if (realStartedAt && active.startedAt !== realStartedAt) {
+            active.startedAt = realStartedAt;
+          }
+          if (active.offlineSince) {
+            console.log(`[StreamElevate Colector] ¡Streamer Kick reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
+            delete active.offlineSince;
+          }
         }
+
+        recordAudience(active.id, 'kick', slug, now, viewers, category, title);
       } else {
-        active.viewers = viewers;
-        active.peak = Math.max(active.peak, viewers);
-        active.category = category;
-        active.title = title;
-        if (realStartedAt && active.startedAt !== realStartedAt) {
-          active.startedAt = realStartedAt;
-        }
-        if (active.offlineSince) {
-          console.log(`[StreamElevate Colector] ¡Streamer Kick reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
-          delete active.offlineSince;
-        }
-      }
+        const active = memoryState.activeStreams.get(key);
+        if (active) {
+          if (!active.offlineSince) {
+            active.offlineSince = now;
+            console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Kick). Iniciando gracia (5 min por posible microcaída de WiFi/IRL)...`);
+            continue;
+          }
 
-      recordAudience(active.id, 'kick', slug, now, viewers, category, title);
-    } else {
-      const active = memoryState.activeStreams.get(key);
-      if (active) {
-        // Tolerancia a microcortes IRL (5 minutos = 300,000 ms)
-        if (!active.offlineSince) {
-          active.offlineSince = now;
-          console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Kick). Iniciando gracia (5 min por posible microcaída de WiFi/IRL)...`);
-          return;
-        }
+          if (now - active.offlineSince < 300000) {
+            continue;
+          }
 
-        const offlineDurationMs = now - active.offlineSince;
-        if (offlineDurationMs < 300000) {
-          return;
-        }
+          console.log(`[StreamElevate Colector] Directo Kick finalizado: ${slug} (offline > 5min).`);
+          const stats = stmts.getChatStats.get(active.id);
+          const samples = stmts.getAudienceSamples.all(active.id);
 
-        // Más de 5 minutos offline continuo: el directo concluyó oficialmente
-        console.log(`[StreamElevate Colector] Directo Kick finalizado oficialmente: ${slug} (offline > 5min).`);
-        const stats = stmts.getChatStats.get(active.id);
-        const samples = stmts.getAudienceSamples.all(active.id);
+          let weightedSum = 0;
+          let totalDuration = 0;
+          for (let i = 0; i < samples.length - 1; i++) {
+            const dt = (samples[i + 1].timestamp - samples[i].timestamp) / 1000;
+            weightedSum += ((samples[i].viewers + samples[i + 1].viewers) / 2) * dt;
+            totalDuration += dt;
+          }
+          const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : active.viewers;
 
-        let weightedSum = 0;
-        let totalDuration = 0;
-        for (let i = 0; i < samples.length - 1; i++) {
-          const dt = (samples[i + 1].timestamp - samples[i].timestamp) / 1000;
-          weightedSum += ((samples[i].viewers + samples[i + 1].viewers) / 2) * dt;
-          totalDuration += dt;
-        }
-        const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : active.viewers;
+          stmts.closeStream.run({
+            id: active.id,
+            ended_at: active.offlineSince || now,
+            avg_viewers: Math.round(avgViewers),
+            total_messages: stats?.total_messages || 0,
+            unique_chatters: stats?.unique_chatters || 0
+          });
 
-        stmts.closeStream.run({
-          id: active.id,
-          ended_at: active.offlineSince || now,
-          avg_viewers: Math.round(avgViewers),
-          total_messages: stats?.total_messages || 0,
-          unique_chatters: stats?.unique_chatters || 0
-        });
-
-        memoryState.activeStreams.delete(key);
-        if (chatroomId) {
-          unsubscribeChatroom(chatroomId);
+          memoryState.activeStreams.delete(key);
+          if (chatroomId) {
+            unsubscribeChatroom(chatroomId);
+          }
         }
       }
     }
   } catch (err) {
-    // Silencioso ante microcortes
+    console.error('[StreamElevate Colector] Error en pollKickBatch:', err.message);
   }
 }
 
@@ -588,10 +632,9 @@ async function runFastCycle() {
       await pollTwitchBatch(activeTwitch);
     }
 
-    // Kick: espaciado de 150ms para evitar cualquier ráfaga hacia Cloudflare
-    for (const ch of activeKick) {
-      await pollKickChannel(ch);
-      await sleep(150);
+    // Kick: 1 sola petición oficial a api.kick.com para streams activos
+    if (activeKick.length > 0) {
+      await pollKickBatch(activeKick);
     }
   } finally {
     isFastPollRunning = false;
@@ -613,11 +656,8 @@ async function runFullSweep() {
       if (i + 20 < twitchChannels.length) await sleep(200);
     }
 
-    // 2. Kick: 1 canal cada 150ms (28 canales = ~4.2s distribuidos suavemente)
-    for (const ch of kickChannels) {
-      await pollKickChannel(ch);
-      await sleep(150);
-    }
+    // 2. Kick: 1 sola petición oficial para todos los 28 canales
+    await pollKickBatch(kickChannels);
   } finally {
     isFullSweepRunning = false;
   }
@@ -669,6 +709,7 @@ function getTelemetrySnapshot(slug, platform = 'kick') {
     peak_viewers: active ? active.peak : 0,
     category: active ? active.category : (channel?.current_category || 'N/D'),
     title: active ? active.title : (channel?.current_title || 'N/D'),
+    avatar_url: active?.avatarUrl || channel?.avatar_url || null,
     started_at: active ? active.startedAt : null,
     uptime_seconds: active ? Math.floor((now - active.startedAt) / 1000) : 0,
     chat_velocity: {
@@ -685,7 +726,7 @@ module.exports = {
   getTelemetrySnapshot,
   memoryState,
   subscribeChatroom,
-  pollKickChannel,
+  pollKickBatch,
   pollTwitchBatch,
   twitchSubscribed
 };

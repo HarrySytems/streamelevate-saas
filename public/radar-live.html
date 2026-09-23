@@ -27,7 +27,6 @@
       flex-direction: column;
       overflow-x: hidden;
     }
-    /* Top Bar */
     .topbar {
       background: #0f172a;
       border-bottom: 1px solid #1e293b;
@@ -110,7 +109,6 @@
       background: #0369a1;
     }
 
-    /* Full Canvas Container (Radar Layout without Side/Bottom Cards) */
     .viewport {
       flex: 1;
       display: flex;
@@ -135,7 +133,6 @@
       display: block;
     }
 
-    /* Floating Status Pill */
     .status-pill {
       position: absolute;
       bottom: 16px;
@@ -168,7 +165,6 @@
 </head>
 <body>
 
-  <!-- Top Bar Controls -->
   <header class="topbar">
     <div class="brand">
       <div class="brand-icon">⚡</div>
@@ -198,7 +194,6 @@
     </div>
   </header>
 
-  <!-- Main Pure Graph Viewport -->
   <main class="viewport">
     <div class="canvas-card">
       <canvas id="radarCanvas" width="1280" height="720"></canvas>
@@ -210,99 +205,23 @@
   </main>
 
   <script>
-    // ==========================================
-    // MOTOR MATEMÁTICO PCHIP (Interpolación Suave)
-    // ==========================================
-    function cleanSamples(raw) {
-      const seen = new Set();
-      const cleaned = (raw || [])
-        .map(s => ({ t: Number(s.timestamp ?? s.t), v: Number(s.viewers ?? s.v) }))
-        .filter(s => Number.isFinite(s.t) && Number.isFinite(s.v) && s.v >= 0)
-        .sort((a, b) => a.t - b.t)
-        .filter(s => {
-          if (seen.has(s.t)) return false;
-          seen.add(s.t);
-          return true;
-        });
-
-      if (cleaned.length < 2) {
-        if (cleaned.length === 1) return [cleaned[0], { t: cleaned[0].t + 15000, v: cleaned[0].v }];
-        return [{ t: Date.now() - 30000, v: 0 }, { t: Date.now(), v: 0 }];
-      }
-      return cleaned;
-    }
-
-    function computePchipSlopes(xs, ys) {
-      const n = xs.length;
-      const h = new Array(n - 1);
-      const delta = new Array(n - 1);
-      for (let i = 0; i < n - 1; i++) {
-        h[i] = xs[i + 1] - xs[i];
-        delta[i] = (ys[i + 1] - ys[i]) / (h[i] || 1);
-      }
-      const m = new Array(n);
-      if (n === 2) {
-        m[0] = m[1] = delta[0];
-        return m;
-      }
-      for (let i = 1; i < n - 1; i++) {
-        const d0 = delta[i - 1], d1 = delta[i];
-        if (d0 === 0 || d1 === 0 || (d0 > 0) !== (d1 > 0)) {
-          m[i] = 0;
-        } else {
-          const w0 = 2 * h[i] + h[i - 1];
-          const w1 = h[i] + 2 * h[i - 1];
-          m[i] = (w0 + w1) / (w0 / d0 + w1 / d1);
-        }
-      }
-      m[0] = ((2 * h[0] + h[1]) * delta[0] - h[0] * delta[1]) / (h[0] + h[1] || 1);
-      m[n - 1] = ((2 * h[n - 2] + h[n - 3]) * delta[n - 2] - h[n - 2] * delta[n - 3]) / (h[n - 2] + h[n - 3] || 1);
-      return m;
-    }
-
-    function hermite(x0, x1, y0, y1, m0, m1, x) {
-      const h = x1 - x0;
-      if (h <= 0) return y0;
-      const t = (x - x0) / h;
-      const t2 = t * t, t3 = t2 * t;
-      return (2*t3 - 3*t2 + 1)*y0 + (t3 - 2*t2 + t)*h*m0 + (-2*t3 + 3*t2)*y1 + (t3 - t2)*h*m1;
-    }
-
-    function createPchipInterpolator(samples) {
-      const s = cleanSamples(samples);
-      const xs = s.map(p => p.t);
-      const ys = s.map(p => p.v);
-      const slopes = computePchipSlopes(xs, ys);
-      return function(t) {
-        if (t <= xs[0]) return ys[0];
-        if (t >= xs[xs.length - 1]) return ys[ys.length - 1];
-        let lo = 0, hi = xs.length - 1;
-        while (hi - lo > 1) {
-          const mid = (lo + hi) >> 1;
-          if (xs[mid] <= t) lo = mid; else hi = mid;
-        }
-        return Math.max(0, hermite(xs[lo], xs[hi], ys[lo], ys[hi], slopes[lo], slopes[hi], t));
-      };
-    }
-
-    // ==========================================
-    // ESTADO DEL RENDERIZADO
-    // ==========================================
     let currentSlug = 'westcol';
     let currentPlatform = 'kick';
     let currentStreamerData = null;
     let currentSamples = [];
-    let densePoints = [];
+    let processedPoints = []; // Subsampled points for smooth Bézier drawing
+
+    let streamerAvatarImg = null;
+    let currentAvatarUrl = '';
 
     let currentMode = 'live'; // 'live' | 'replay'
     let showEqualizerBars = true;
-    let replayProgress = 0; // 0 to 1
+    let replayProgress = 1;
     let replayAnimId = null;
 
     const canvas = document.getElementById('radarCanvas');
     const ctx = canvas.getContext('2d');
 
-    // Margins de la gráfica (Ocupa todo el centro y abajo, sin tarjetas estorbosas)
     const MARGIN = {
       left: 100,
       right: 60,
@@ -330,7 +249,7 @@
     function startReplay() {
       setMode('replay');
       replayProgress = 0;
-      const durationMs = 12000; // 12 segundos de animación
+      const durationMs = 12000;
       const startTime = performance.now();
 
       function step(now) {
@@ -349,7 +268,7 @@
     }
 
     // ==========================================
-    // DIBUJADO DE LA GRÁFICA PURA
+    // DIBUJADO DE LA GRÁFICA PURA (ESTILO RADARSTREAM)
     // ==========================================
     function draw() {
       requestAnimationFrame(draw);
@@ -402,7 +321,7 @@
       const category = currentStreamerData?.category || 'General';
       const isLive = Boolean(currentStreamerData?.is_live);
 
-      // Avatar
+      // Avatar con foto real o fallback
       const avX = 65, avY = 60, avR = 30;
       ctx.save();
       ctx.strokeStyle = neon;
@@ -418,13 +337,30 @@
       ctx.beginPath();
       ctx.arc(avX, avY, avR - 1, 0, Math.PI * 2);
       ctx.clip();
-      ctx.fillStyle = '#14202c';
-      ctx.fillRect(avX - avR, avY - avR, avR * 2, avR * 2);
+      if (streamerAvatarImg && streamerAvatarImg.complete && streamerAvatarImg.naturalWidth > 0) {
+        ctx.drawImage(streamerAvatarImg, avX - avR, avY - avR, avR * 2, avR * 2);
+      } else {
+        ctx.fillStyle = '#14202c';
+        ctx.fillRect(avX - avR, avY - avR, avR * 2, avR * 2);
+        ctx.fillStyle = neon;
+        ctx.font = '900 30px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(streamerName[0] || '?', avX, avY + 2);
+      }
+      ctx.restore();
+
+      // Badge de Plataforma sobre el avatar
+      ctx.save();
       ctx.fillStyle = neon;
-      ctx.font = '900 30px Arial';
+      ctx.beginPath();
+      ctx.arc(avX + 22, avY + 22, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000000';
+      ctx.font = '900 11px Arial';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(streamerName[0] || '?', avX, avY + 2);
+      ctx.fillText(isKick ? 'K' : 'T', avX + 22, avY + 23);
       ctx.restore();
 
       // Textos de Cabecera
@@ -463,18 +399,19 @@
       ctx.font = '700 11px Arial';
       ctx.fillText('LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 70);
 
-      // 6. Preparar Escala de Datos de la Gráfica
-      if (densePoints.length < 2) return;
+      // 6. Preparar Escala y Coordenadas de la Gráfica
+      if (processedPoints.length < 2) return;
 
-      const firstT = densePoints[0].t;
-      const lastT = densePoints[densePoints.length - 1].t;
+      const firstT = processedPoints[0].t;
+      const lastT = processedPoints[processedPoints.length - 1].t;
       const timeSpan = Math.max(1000, lastT - firstT);
 
-      // Buscar pico máximo para escalar eje Y
+      // Pico máximo dinámico
       let maxV = -Infinity;
-      densePoints.forEach(p => { if (p.v > maxV) maxV = p.v; });
+      processedPoints.forEach(p => { if (p.v > maxV) maxV = p.v; });
       maxV = Math.max(100, maxV);
-      const yCeil = Math.ceil((maxV * 1.15) / 1000) * 1000;
+      const stepRound = maxV > 50000 ? 10000 : (maxV > 20000 ? 5000 : 2000);
+      const yCeil = Math.ceil((maxV * 1.12) / stepRound) * stepRound;
 
       const graphW = (W - MARGIN.right) - MARGIN.left;
       const graphH = MARGIN.bottom - MARGIN.top;
@@ -482,7 +419,7 @@
       const getX = (t) => MARGIN.left + ((t - firstT) / timeSpan) * graphW;
       const getY = (v) => MARGIN.bottom - (Math.max(0, v) / yCeil) * graphH;
 
-      // 7. Eje Y y Guías Horizontales
+      // 7. Eje Y con Líneas Guía Horizontales
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.font = '600 12px Arial';
@@ -512,34 +449,57 @@
         ctx.fillText(timeStr, xPos, MARGIN.bottom + 12);
       }
 
-      // 9. Calcular hasta qué punto se dibuja según el modo
-      let activeLength = densePoints.length;
-      if (currentMode === 'replay') {
-        activeLength = Math.max(2, Math.floor(replayProgress * densePoints.length));
-      }
-      const visiblePoints = densePoints.slice(0, activeLength);
-      if (visiblePoints.length < 2) return;
+      // 9. Calcular puntos activos según modo
+      const allCoords = processedPoints.map(p => ({
+        x: getX(p.t),
+        y: getY(p.v),
+        v: p.v,
+        t: p.t
+      }));
 
-      // 10. Barras de Ecualizador Neón (Debajo de la curva)
+      let activeCount = allCoords.length;
+      if (currentMode === 'replay') {
+        activeCount = Math.max(2, Math.floor(replayProgress * allCoords.length));
+      }
+      const activeCoords = allCoords.slice(0, activeCount);
+      if (activeCoords.length < 2) return;
+
+      const headPt = activeCoords[activeCoords.length - 1];
+
+      // 10. Barras de Espectro Neón (Espaciadas y elegantes)
       if (showEqualizerBars) {
-        const barStep = 8;
-        const now = performance.now() * 0.005;
-        ctx.fillStyle = isKick ? 'rgba(83, 252, 24, 0.12)' : 'rgba(169, 112, 255, 0.12)';
-        for (let bx = MARGIN.left; bx <= getX(visiblePoints[visiblePoints.length - 1].t); bx += barStep) {
-          const normX = (bx - MARGIN.left) / graphW;
-          const targetT = firstT + normX * timeSpan;
-          // Interpolación rápida para la altura de la barra
-          const pIdx = Math.min(visiblePoints.length - 1, Math.floor(normX * visiblePoints.length));
-          const pVal = visiblePoints[pIdx]?.v || 0;
-          const baseY = getY(pVal);
-          // Efecto de pulso senoidal orgánico estilo analizador de espectro
-          const wave = (Math.sin(now + bx * 0.08) * 0.5 + 0.5) * 15;
-          const barH = Math.max(4, (MARGIN.bottom - baseY) * 0.4 + wave);
-          ctx.fillRect(bx, MARGIN.bottom - barH, 4, barH);
+        const numBars = 32;
+        const barW = 8;
+        const graphSpanX = headPt.x - MARGIN.left;
+        const stepX = graphSpanX / numBars;
+        const now = performance.now() * 0.003;
+
+        for (let b = 0; b < numBars; b++) {
+          const bx = MARGIN.left + b * stepX + (stepX - barW) / 2;
+          if (bx + barW > headPt.x) break;
+
+          const norm = b / numBars;
+          const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
+          const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
+          const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
+
+          const pulse = Math.sin(now + b * 0.45) * 0.35 + 0.65;
+          const barH = Math.max(6, Math.min(maxAvailable * 0.55, maxAvailable * 0.3 + pulse * 22));
+
+          const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
+          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
+          barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+          ctx.save();
+          ctx.fillStyle = barGrad;
+          ctx.beginPath();
+          ctx.roundRect(bx, MARGIN.bottom - barH, barW, barH, [4, 4, 0, 0]);
+          ctx.fill();
+          ctx.restore();
         }
       }
 
-      // 11. Área con Gradiente Suave
+      // 11. Área con Gradiente Suave (Bézier Cuadrática)
       const areaGrad = ctx.createLinearGradient(0, MARGIN.top, 0, MARGIN.bottom);
       areaGrad.addColorStop(0, areaColor);
       areaGrad.addColorStop(0.7, isKick ? 'rgba(83, 252, 24, 0.06)' : 'rgba(169, 112, 255, 0.06)');
@@ -547,44 +507,58 @@
 
       ctx.fillStyle = areaGrad;
       ctx.beginPath();
-      ctx.moveTo(getX(visiblePoints[0].t), MARGIN.bottom);
-      visiblePoints.forEach(p => ctx.lineTo(getX(p.t), getY(p.v)));
-      ctx.lineTo(getX(visiblePoints[visiblePoints.length - 1].t), MARGIN.bottom);
+      ctx.moveTo(activeCoords[0].x, MARGIN.bottom);
+      ctx.lineTo(activeCoords[0].x, activeCoords[0].y);
+      for (let i = 0; i < activeCoords.length - 1; i++) {
+        const p0 = activeCoords[i];
+        const p1 = activeCoords[i + 1];
+        const midX = (p0.x + p1.x) / 2;
+        const midY = (p0.y + p1.y) / 2;
+        ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
+      }
+      ctx.lineTo(headPt.x, headPt.y);
+      ctx.lineTo(headPt.x, MARGIN.bottom);
       ctx.closePath();
       ctx.fill();
 
-      // 12. Línea Neón Resplandeciente (Glow)
+      // 12. Línea Neón Resplandeciente (Bézier Cuadrática - Cero Zigzag)
       ctx.save();
       ctx.strokeStyle = neon;
-      ctx.lineWidth = 3.5;
+      ctx.lineWidth = 3.6;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 16;
+      ctx.shadowBlur = 18;
       ctx.beginPath();
-      visiblePoints.forEach((p, idx) => {
-        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
-        else ctx.lineTo(getX(p.t), getY(p.v));
-      });
+      ctx.moveTo(activeCoords[0].x, activeCoords[0].y);
+      for (let i = 0; i < activeCoords.length - 1; i++) {
+        const p0 = activeCoords[i];
+        const p1 = activeCoords[i + 1];
+        const midX = (p0.x + p1.x) / 2;
+        const midY = (p0.y + p1.y) / 2;
+        ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
+      }
+      ctx.lineTo(headPt.x, headPt.y);
       ctx.stroke();
       ctx.restore();
 
       // Trazo interior blanco nítido
-      ctx.save();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1;
       ctx.beginPath();
-      visiblePoints.forEach((p, idx) => {
-        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
-        else ctx.lineTo(getX(p.t), getY(p.v));
-      });
+      ctx.moveTo(activeCoords[0].x, activeCoords[0].y);
+      for (let i = 0; i < activeCoords.length - 1; i++) {
+        const p0 = activeCoords[i];
+        const p1 = activeCoords[i + 1];
+        const midX = (p0.x + p1.x) / 2;
+        const midY = (p0.y + p1.y) / 2;
+        ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
+      }
+      ctx.lineTo(headPt.x, headPt.y);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
       ctx.stroke();
-      ctx.restore();
 
       // 13. Aguja / Playhead en la Punta
-      const head = visiblePoints[visiblePoints.length - 1];
-      const hX = getX(head.t);
-      const hY = getY(head.v);
+      const hX = headPt.x;
+      const hY = headPt.y;
 
-      // Halo pulsante
       ctx.save();
       ctx.strokeStyle = neon;
       ctx.lineWidth = 2;
@@ -595,14 +569,13 @@
       ctx.stroke();
       ctx.restore();
 
-      // Núcleo blanco
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
       ctx.arc(hX, hY, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Badge flotante sobre la punta con el número exacto
-      const badgeText = `${Math.round(head.v).toLocaleString()} VIEWERS`;
+      // Badge flotante sobre la aguja
+      const badgeText = `${Math.round(headPt.v).toLocaleString()} VIEWERS`;
       ctx.font = '900 13px Arial';
       const bW = ctx.measureText(badgeText).width + 16;
       const bH = 24;
@@ -629,7 +602,7 @@
     }
 
     // ==========================================
-    // CARGA DE DATOS DE LA API
+    // CARGA Y PROCESAMIENTO DE DATOS
     // ==========================================
     async function loadStreamerData(slug, platform) {
       try {
@@ -637,41 +610,61 @@
         if (!liveRes.ok) return;
         currentStreamerData = await liveRes.json();
 
-        // Cargar historial de muestras desde la sesión activa
+        // Cargar foto de avatar real
+        if (currentStreamerData.avatar_url && currentStreamerData.avatar_url !== currentAvatarUrl) {
+          currentAvatarUrl = currentStreamerData.avatar_url;
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.src = currentAvatarUrl;
+          img.onload = () => { streamerAvatarImg = img; };
+        }
+
+        // Cargar muestras históricas de la sesión
         if (currentStreamerData.stream_id) {
           const sessRes = await fetch(`/api/v1/streamers/${slug}/session/${currentStreamerData.stream_id}`);
           if (sessRes.ok) {
             const sessData = await sessRes.json();
             if (Array.isArray(sessData.samples) && sessData.samples.length > 0) {
               currentSamples = sessData.samples;
-            } else {
-              // Si aún no hay muestras en DB, crear al menos dos con los datos actuales
-              const now = Date.now();
-              currentSamples = [
-                { timestamp: (currentStreamerData.started_at || now - 60000), viewers: currentStreamerData.current_viewers * 0.8 },
-                { timestamp: now, viewers: currentStreamerData.current_viewers }
-              ];
             }
           }
         }
 
-        // Remuestrear suavemente con PCHIP a 600 puntos densos
-        const cleaned = cleanSamples(currentSamples);
-        const interp = createPchipInterpolator(cleaned);
-        const t0 = cleaned[0].t;
-        const t1 = cleaned[cleaned.length - 1].t;
-        const span = t1 - t0;
+        if (currentSamples.length === 0) {
+          const now = Date.now();
+          currentSamples = [
+            { timestamp: (currentStreamerData.started_at || now - 60000), viewers: Math.round(currentStreamerData.current_viewers * 0.8) },
+            { timestamp: now, viewers: currentStreamerData.current_viewers }
+          ];
+        }
 
-        densePoints = [];
-        const count = Math.max(100, Math.min(800, cleaned.length * 15));
-        for (let i = 0; i <= count; i++) {
-          const t = t0 + (i / count) * span;
-          densePoints.push({ t, v: interp(t) });
+        // 1. Filtrar puntos adyacentes idénticos (evita escalones/oscilaciones artificiales)
+        const deduped = [];
+        for (let i = 0; i < currentSamples.length; i++) {
+          const cur = { t: Number(currentSamples[i].timestamp ?? currentSamples[i].t), v: Number(currentSamples[i].viewers ?? currentSamples[i].v) };
+          const last = deduped[deduped.length - 1];
+          if (!last || last.v !== cur.v || (cur.t - last.t > 120000) || i === currentSamples.length - 1) {
+            deduped.push(cur);
+          }
+        }
+
+        // 2. Submuestrear a un número óptimo de puntos para Bézier suave
+        const targetCount = Math.min(120, Math.max(20, deduped.length));
+        processedPoints = [];
+        for (let i = 0; i < targetCount; i++) {
+          const idx = Math.min(deduped.length - 1, Math.floor((i / (targetCount - 1)) * (deduped.length - 1)));
+          processedPoints.push(deduped[idx]);
+        }
+
+        // Asegurar que el último punto tenga exactamente los viewers actuales
+        if (processedPoints.length > 0 && currentStreamerData.current_viewers > 0) {
+          processedPoints[processedPoints.length - 1].v = currentStreamerData.current_viewers;
+          processedPoints[processedPoints.length - 1].t = Date.now();
         }
 
         if (currentMode === 'live') {
           replayProgress = 1;
-          document.getElementById('statusText').textContent = `Muestras activas: ${currentSamples.length} • Viendo: ${slug.toUpperCase()} (${platform.toUpperCase()})`;
+          document.getElementById('statusText').textContent = `Muestras activas: ${currentSamples.length} • Viendo: ${slug.toUpperCase()} (${platform.toUpperCase()}) con ${currentStreamerData.current_viewers.toLocaleString()} viewers`;
         }
       } catch (err) {
         console.error('Error cargando streamer:', err);
@@ -702,7 +695,6 @@
           select.appendChild(opt);
         });
 
-        // Si el seleccionado inicial no está en vivo, buscar el primero que sí lo esté
         if (sorted.length > 0 && sorted[0].is_live) {
           currentSlug = sorted[0].slug;
           currentPlatform = sorted[0].platform;
@@ -724,14 +716,12 @@
       loadStreamerData(currentSlug, currentPlatform);
     });
 
-    // Sondeo en vivo cada 10 segundos
     setInterval(() => {
       if (currentMode === 'live') {
         loadStreamerData(currentSlug, currentPlatform);
       }
     }, 10000);
 
-    // Iniciar bucle de dibujo a 60fps
     requestAnimationFrame(draw);
   </script>
 </body>
