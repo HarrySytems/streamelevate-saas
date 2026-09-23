@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StreamElevate • Radar Live Graph Test</title>
+  <style>
+    :root {
+      --bg: #070b10;
+      --card-bg: #0d131b;
+      --accent-neon: #53fc18;
+      --twitch-purple: #a970ff;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+    /* Top Bar */
+    .topbar {
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: #f8fafc;
+    }
+    .brand-icon {
+      background: #e11d48;
+      color: white;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .select-streamer {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #f8fafc;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      outline: none;
+    }
+    .btn {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: white;
+      padding: 6px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+    .btn:hover {
+      background: #334155;
+    }
+    .btn.active {
+      background: var(--accent-neon);
+      color: #000000;
+      border-color: var(--accent-neon);
+      font-weight: 800;
+    }
+    .btn-twitch.active {
+      background: var(--twitch-purple);
+      color: #ffffff;
+      border-color: var(--twitch-purple);
+    }
+    .btn-replay {
+      background: #0284c7;
+      border-color: #38bdf8;
+    }
+    .btn-replay:hover {
+      background: #0369a1;
+    }
+
+    /* Full Canvas Container (Radar Layout without Side/Bottom Cards) */
+    .viewport {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .canvas-card {
+      width: 100%;
+      max-width: 1280px;
+      aspect-ratio: 16 / 9;
+      background: #090f15;
+      border: 1px solid #1a2634;
+      border-radius: 14px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 15px 40px rgba(0,0,0,0.8);
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Floating Status Pill */
+    .status-pill {
+      position: absolute;
+      bottom: 16px;
+      left: 20px;
+      background: rgba(13, 19, 27, 0.85);
+      border: 1px solid rgba(255,255,255,0.1);
+      backdrop-filter: blur(8px);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 10;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-neon);
+      box-shadow: 0 0 10px var(--accent-neon);
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.2); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Bar Controls -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <span>RadarStream • Test de Gráfica Ecualizador</span>
+    </div>
+
+    <div class="controls">
+      <select id="streamerSelect" class="select-streamer" onchange="onSelectStreamer(this.value)">
+        <option value="">Cargando canales...</option>
+      </select>
+
+      <button id="btnLiveMode" class="btn active" onclick="setMode('live')">
+        🔴 Modo En Vivo (15s)
+      </button>
+
+      <button id="btnReplayMode" class="btn btn-replay" onclick="startReplay()">
+        ⚡ Simular Reproducción Ecualizador
+      </button>
+
+      <button id="btnBarsToggle" class="btn" onclick="toggleEqualizerBars()">
+        🎛️ Barras de Espectro: ON
+      </button>
+
+      <a href="/live-counter.html" class="btn">
+        📊 Ver Modo Contador
+      </a>
+    </div>
+  </header>
+
+  <!-- Main Pure Graph Viewport -->
+  <main class="viewport">
+    <div class="canvas-card">
+      <canvas id="radarCanvas" width="1280" height="720"></canvas>
+      <div class="status-pill">
+        <span id="liveDot" class="dot"></span>
+        <span id="statusText">Conectando a telemetría en vivo...</span>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ==========================================
+    // MOTOR MATEMÁTICO PCHIP (Interpolación Suave)
+    // ==========================================
+    function cleanSamples(raw) {
+      const seen = new Set();
+      const cleaned = (raw || [])
+        .map(s => ({ t: Number(s.timestamp ?? s.t), v: Number(s.viewers ?? s.v) }))
+        .filter(s => Number.isFinite(s.t) && Number.isFinite(s.v) && s.v >= 0)
+        .sort((a, b) => a.t - b.t)
+        .filter(s => {
+          if (seen.has(s.t)) return false;
+          seen.add(s.t);
+          return true;
+        });
+
+      if (cleaned.length < 2) {
+        if (cleaned.length === 1) return [cleaned[0], { t: cleaned[0].t + 15000, v: cleaned[0].v }];
+        return [{ t: Date.now() - 30000, v: 0 }, { t: Date.now(), v: 0 }];
+      }
+      return cleaned;
+    }
+
+    function computePchipSlopes(xs, ys) {
+      const n = xs.length;
+      const h = new Array(n - 1);
+      const delta = new Array(n - 1);
+      for (let i = 0; i < n - 1; i++) {
+        h[i] = xs[i + 1] - xs[i];
+        delta[i] = (ys[i + 1] - ys[i]) / (h[i] || 1);
+      }
+      const m = new Array(n);
+      if (n === 2) {
+        m[0] = m[1] = delta[0];
+        return m;
+      }
+      for (let i = 1; i < n - 1; i++) {
+        const d0 = delta[i - 1], d1 = delta[i];
+        if (d0 === 0 || d1 === 0 || (d0 > 0) !== (d1 > 0)) {
+          m[i] = 0;
+        } else {
+          const w0 = 2 * h[i] + h[i - 1];
+          const w1 = h[i] + 2 * h[i - 1];
+          m[i] = (w0 + w1) / (w0 / d0 + w1 / d1);
+        }
+      }
+      m[0] = ((2 * h[0] + h[1]) * delta[0] - h[0] * delta[1]) / (h[0] + h[1] || 1);
+      m[n - 1] = ((2 * h[n - 2] + h[n - 3]) * delta[n - 2] - h[n - 2] * delta[n - 3]) / (h[n - 2] + h[n - 3] || 1);
+      return m;
+    }
+
+    function hermite(x0, x1, y0, y1, m0, m1, x) {
+      const h = x1 - x0;
+      if (h <= 0) return y0;
+      const t = (x - x0) / h;
+      const t2 = t * t, t3 = t2 * t;
+      return (2*t3 - 3*t2 + 1)*y0 + (t3 - 2*t2 + t)*h*m0 + (-2*t3 + 3*t2)*y1 + (t3 - t2)*h*m1;
+    }
+
+    function createPchipInterpolator(samples) {
+      const s = cleanSamples(samples);
+      const xs = s.map(p => p.t);
+      const ys = s.map(p => p.v);
+      const slopes = computePchipSlopes(xs, ys);
+      return function(t) {
+        if (t <= xs[0]) return ys[0];
+        if (t >= xs[xs.length - 1]) return ys[ys.length - 1];
+        let lo = 0, hi = xs.length - 1;
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1;
+          if (xs[mid] <= t) lo = mid; else hi = mid;
+        }
+        return Math.max(0, hermite(xs[lo], xs[hi], ys[lo], ys[hi], slopes[lo], slopes[hi], t));
+      };
+    }
+
+    // ==========================================
+    // ESTADO DEL RENDERIZADO
+    // ==========================================
+    let currentSlug = 'westcol';
+    let currentPlatform = 'kick';
+    let currentStreamerData = null;
+    let currentSamples = [];
+    let densePoints = [];
+
+    let currentMode = 'live'; // 'live' | 'replay'
+    let showEqualizerBars = true;
+    let replayProgress = 0; // 0 to 1
+    let replayAnimId = null;
+
+    const canvas = document.getElementById('radarCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Margins de la gráfica (Ocupa todo el centro y abajo, sin tarjetas estorbosas)
+    const MARGIN = {
+      left: 100,
+      right: 60,
+      top: 130,
+      bottom: 640
+    };
+
+    function setMode(mode) {
+      currentMode = mode;
+      document.getElementById('btnLiveMode').classList.toggle('active', mode === 'live');
+      document.getElementById('btnReplayMode').classList.toggle('active', mode === 'replay');
+      if (mode === 'live') {
+        if (replayAnimId) cancelAnimationFrame(replayAnimId);
+        replayProgress = 1;
+        document.getElementById('liveDot').style.background = currentPlatform === 'kick' ? '#53fc18' : '#a970ff';
+        document.getElementById('statusText').textContent = 'Modo En Vivo: Escuchando muestras cada 15s';
+      }
+    }
+
+    function toggleEqualizerBars() {
+      showEqualizerBars = !showEqualizerBars;
+      document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
+    }
+
+    function startReplay() {
+      setMode('replay');
+      replayProgress = 0;
+      const durationMs = 12000; // 12 segundos de animación
+      const startTime = performance.now();
+
+      function step(now) {
+        if (currentMode !== 'replay') return;
+        const elapsed = now - startTime;
+        replayProgress = Math.min(1, elapsed / durationMs);
+        document.getElementById('statusText').textContent = `Simulando animación ecualizador: ${Math.round(replayProgress * 100)}%`;
+        
+        if (replayProgress < 1) {
+          replayAnimId = requestAnimationFrame(step);
+        } else {
+          document.getElementById('statusText').textContent = 'Simulación finalizada. Puedes repetir o volver a En Vivo.';
+        }
+      }
+      replayAnimId = requestAnimationFrame(step);
+    }
+
+    // ==========================================
+    // DIBUJADO DE LA GRÁFICA PURA
+    // ==========================================
+    function draw() {
+      requestAnimationFrame(draw);
+
+      const W = canvas.width;
+      const H = canvas.height;
+      const isKick = (currentPlatform === 'kick');
+      const neon = isKick ? '#53fc18' : '#a970ff';
+      const areaColor = isKick ? 'rgba(83, 252, 24, 0.35)' : 'rgba(169, 112, 255, 0.35)';
+
+      // 1. Fondo Broadcast Oscuro
+      const bg = ctx.createLinearGradient(0, 0, W, H);
+      bg.addColorStop(0, '#090f15');
+      bg.addColorStop(1, '#05080c');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // 2. Líneas de Cuadrícula Sutiles
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
+      ctx.lineWidth = 1;
+      for (let x = MARGIN.left; x <= W - MARGIN.right; x += 55) {
+        ctx.beginPath();
+        ctx.moveTo(x, MARGIN.top);
+        ctx.lineTo(x, MARGIN.bottom);
+        ctx.stroke();
+      }
+
+      // 3. Marca de Agua Gigante (KICK o TWITCH)
+      ctx.save();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+      ctx.font = '900 160px Arial, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(currentPlatform.toUpperCase(), (MARGIN.left + (W - MARGIN.right)) / 2, (MARGIN.top + MARGIN.bottom) / 2);
+      ctx.restore();
+
+      // 4. Barra Neón Superior
+      const accent = ctx.createLinearGradient(0, 0, W, 0);
+      accent.addColorStop(0, 'transparent');
+      accent.addColorStop(0.2, neon);
+      accent.addColorStop(0.5, '#ffffff');
+      accent.addColorStop(0.8, neon);
+      accent.addColorStop(1, 'transparent');
+      ctx.fillStyle = accent;
+      ctx.fillRect(0, 0, W, 3);
+
+      // 5. Header del Streamer (Arriba)
+      const streamerName = (currentStreamerData?.slug || currentSlug).toUpperCase();
+      const title = currentStreamerData?.title || 'Emisión en Directo';
+      const category = currentStreamerData?.category || 'General';
+      const isLive = Boolean(currentStreamerData?.is_live);
+
+      // Avatar
+      const avX = 65, avY = 60, avR = 30;
+      ctx.save();
+      ctx.strokeStyle = neon;
+      ctx.lineWidth = 2.5;
+      ctx.shadowColor = neon;
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(avX, avY, avR - 1, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.fillStyle = '#14202c';
+      ctx.fillRect(avX - avR, avY - avR, avR * 2, avR * 2);
+      ctx.fillStyle = neon;
+      ctx.font = '900 30px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(streamerName[0] || '?', avX, avY + 2);
+      ctx.restore();
+
+      // Textos de Cabecera
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 28px Arial, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(streamerName, 115, 52);
+
+      // Badge LIVE
+      ctx.fillStyle = isLive ? '#ef4444' : '#475569';
+      ctx.beginPath();
+      ctx.roundRect(115, 64, isLive ? 68 : 78, 20, 4);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '800 11px Arial';
+      ctx.fillText(isLive ? '🔴 EN VIVO' : 'OFFLINE', 123, 78);
+
+      // Título y Categoría
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '500 14px Arial';
+      let titleDisplay = `TÍTULO: ${title} • [${category}]`;
+      if (ctx.measureText(titleDisplay).width > 700) {
+        while (titleDisplay.length > 5 && ctx.measureText(titleDisplay).width > 680) {
+          titleDisplay = titleDisplay.slice(0, -3);
+        }
+        titleDisplay += '…';
+      }
+      ctx.fillText(titleDisplay, 200, 78);
+
+      // Marca RADARSTREAM (Derecha Arriba)
+      ctx.fillStyle = neon;
+      ctx.font = '900 22px Arial';
+      ctx.textAlign = 'right';
+      ctx.fillText('RADARSTREAM', W - 60, 52);
+      ctx.fillStyle = '#64748b';
+      ctx.font = '700 11px Arial';
+      ctx.fillText('LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 70);
+
+      // 6. Preparar Escala de Datos de la Gráfica
+      if (densePoints.length < 2) return;
+
+      const firstT = densePoints[0].t;
+      const lastT = densePoints[densePoints.length - 1].t;
+      const timeSpan = Math.max(1000, lastT - firstT);
+
+      // Buscar pico máximo para escalar eje Y
+      let maxV = -Infinity;
+      densePoints.forEach(p => { if (p.v > maxV) maxV = p.v; });
+      maxV = Math.max(100, maxV);
+      const yCeil = Math.ceil((maxV * 1.15) / 1000) * 1000;
+
+      const graphW = (W - MARGIN.right) - MARGIN.left;
+      const graphH = MARGIN.bottom - MARGIN.top;
+
+      const getX = (t) => MARGIN.left + ((t - firstT) / timeSpan) * graphW;
+      const getY = (v) => MARGIN.bottom - (Math.max(0, v) / yCeil) * graphH;
+
+      // 7. Eje Y y Guías Horizontales
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.font = '600 12px Arial';
+      ctx.fillStyle = '#64748b';
+      const ySteps = 5;
+      for (let i = 0; i <= ySteps; i++) {
+        const val = Math.round((yCeil / ySteps) * i);
+        const yPos = MARGIN.bottom - (i / ySteps) * graphH;
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left, yPos);
+        ctx.lineTo(W - MARGIN.right, yPos);
+        ctx.stroke();
+
+        ctx.fillText(val.toLocaleString(), MARGIN.left - 12, yPos);
+      }
+
+      // 8. Eje X (Horarios)
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const xSteps = 6;
+      for (let i = 0; i <= xSteps; i++) {
+        const tVal = firstT + (timeSpan / xSteps) * i;
+        const xPos = MARGIN.left + (i / xSteps) * graphW;
+        const timeStr = new Date(tVal).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+        ctx.fillText(timeStr, xPos, MARGIN.bottom + 12);
+      }
+
+      // 9. Calcular hasta qué punto se dibuja según el modo
+      let activeLength = densePoints.length;
+      if (currentMode === 'replay') {
+        activeLength = Math.max(2, Math.floor(replayProgress * densePoints.length));
+      }
+      const visiblePoints = densePoints.slice(0, activeLength);
+      if (visiblePoints.length < 2) return;
+
+      // 10. Barras de Ecualizador Neón (Debajo de la curva)
+      if (showEqualizerBars) {
+        const barStep = 8;
+        const now = performance.now() * 0.005;
+        ctx.fillStyle = isKick ? 'rgba(83, 252, 24, 0.12)' : 'rgba(169, 112, 255, 0.12)';
+        for (let bx = MARGIN.left; bx <= getX(visiblePoints[visiblePoints.length - 1].t); bx += barStep) {
+          const normX = (bx - MARGIN.left) / graphW;
+          const targetT = firstT + normX * timeSpan;
+          // Interpolación rápida para la altura de la barra
+          const pIdx = Math.min(visiblePoints.length - 1, Math.floor(normX * visiblePoints.length));
+          const pVal = visiblePoints[pIdx]?.v || 0;
+          const baseY = getY(pVal);
+          // Efecto de pulso senoidal orgánico estilo analizador de espectro
+          const wave = (Math.sin(now + bx * 0.08) * 0.5 + 0.5) * 15;
+          const barH = Math.max(4, (MARGIN.bottom - baseY) * 0.4 + wave);
+          ctx.fillRect(bx, MARGIN.bottom - barH, 4, barH);
+        }
+      }
+
+      // 11. Área con Gradiente Suave
+      const areaGrad = ctx.createLinearGradient(0, MARGIN.top, 0, MARGIN.bottom);
+      areaGrad.addColorStop(0, areaColor);
+      areaGrad.addColorStop(0.7, isKick ? 'rgba(83, 252, 24, 0.06)' : 'rgba(169, 112, 255, 0.06)');
+      areaGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+      ctx.fillStyle = areaGrad;
+      ctx.beginPath();
+      ctx.moveTo(getX(visiblePoints[0].t), MARGIN.bottom);
+      visiblePoints.forEach(p => ctx.lineTo(getX(p.t), getY(p.v)));
+      ctx.lineTo(getX(visiblePoints[visiblePoints.length - 1].t), MARGIN.bottom);
+      ctx.closePath();
+      ctx.fill();
+
+      // 12. Línea Neón Resplandeciente (Glow)
+      ctx.save();
+      ctx.strokeStyle = neon;
+      ctx.lineWidth = 3.5;
+      ctx.shadowColor = neon;
+      ctx.shadowBlur = 16;
+      ctx.beginPath();
+      visiblePoints.forEach((p, idx) => {
+        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
+        else ctx.lineTo(getX(p.t), getY(p.v));
+      });
+      ctx.stroke();
+      ctx.restore();
+
+      // Trazo interior blanco nítido
+      ctx.save();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      visiblePoints.forEach((p, idx) => {
+        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
+        else ctx.lineTo(getX(p.t), getY(p.v));
+      });
+      ctx.stroke();
+      ctx.restore();
+
+      // 13. Aguja / Playhead en la Punta
+      const head = visiblePoints[visiblePoints.length - 1];
+      const hX = getX(head.t);
+      const hY = getY(head.v);
+
+      // Halo pulsante
+      ctx.save();
+      ctx.strokeStyle = neon;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = neon;
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.arc(hX, hY, 8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      // Núcleo blanco
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(hX, hY, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Badge flotante sobre la punta con el número exacto
+      const badgeText = `${Math.round(head.v).toLocaleString()} VIEWERS`;
+      ctx.font = '900 13px Arial';
+      const bW = ctx.measureText(badgeText).width + 16;
+      const bH = 24;
+      const bX = Math.min(W - MARGIN.right - bW, Math.max(MARGIN.left, hX - bW / 2));
+      const bY = Math.max(MARGIN.top - 10, hY - 34);
+
+      ctx.save();
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = neon;
+      ctx.lineWidth = 1.5;
+      ctx.shadowColor = neon;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.roundRect(bX, bY, bW, bH, 5);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = neon;
+      ctx.font = '900 12px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(badgeText, bX + bW / 2, bY + bH / 2);
+    }
+
+    // ==========================================
+    // CARGA DE DATOS DE LA API
+    // ==========================================
+    async function loadStreamerData(slug, platform) {
+      try {
+        const liveRes = await fetch(`/api/v1/streamers/${slug}/live?platform=${platform}`);
+        if (!liveRes.ok) return;
+        currentStreamerData = await liveRes.json();
+
+        // Cargar historial de muestras desde la sesión activa
+        if (currentStreamerData.stream_id) {
+          const sessRes = await fetch(`/api/v1/streamers/${slug}/session/${currentStreamerData.stream_id}`);
+          if (sessRes.ok) {
+            const sessData = await sessRes.json();
+            if (Array.isArray(sessData.samples) && sessData.samples.length > 0) {
+              currentSamples = sessData.samples;
+            } else {
+              // Si aún no hay muestras en DB, crear al menos dos con los datos actuales
+              const now = Date.now();
+              currentSamples = [
+                { timestamp: (currentStreamerData.started_at || now - 60000), viewers: currentStreamerData.current_viewers * 0.8 },
+                { timestamp: now, viewers: currentStreamerData.current_viewers }
+              ];
+            }
+          }
+        }
+
+        // Remuestrear suavemente con PCHIP a 600 puntos densos
+        const cleaned = cleanSamples(currentSamples);
+        const interp = createPchipInterpolator(cleaned);
+        const t0 = cleaned[0].t;
+        const t1 = cleaned[cleaned.length - 1].t;
+        const span = t1 - t0;
+
+        densePoints = [];
+        const count = Math.max(100, Math.min(800, cleaned.length * 15));
+        for (let i = 0; i <= count; i++) {
+          const t = t0 + (i / count) * span;
+          densePoints.push({ t, v: interp(t) });
+        }
+
+        if (currentMode === 'live') {
+          replayProgress = 1;
+          document.getElementById('statusText').textContent = `Muestras activas: ${currentSamples.length} • Viendo: ${slug.toUpperCase()} (${platform.toUpperCase()})`;
+        }
+      } catch (err) {
+        console.error('Error cargando streamer:', err);
+      }
+    }
+
+    async function loadStreamersList() {
+      try {
+        const res = await fetch('/api/v1/channels');
+        if (!res.ok) return;
+        const data = await res.json();
+        const select = document.getElementById('streamerSelect');
+        if (!select || !Array.isArray(data.channels)) return;
+
+        const sorted = data.channels.sort((a, b) => {
+          if (a.is_live && !b.is_live) return -1;
+          if (!a.is_live && b.is_live) return 1;
+          return (b.viewers || 0) - (a.viewers || 0);
+        });
+
+        select.innerHTML = '';
+        sorted.forEach(ch => {
+          const opt = document.createElement('option');
+          opt.value = `${ch.platform}:${ch.slug}`;
+          const liveTag = ch.is_live ? `🔴 [LIVE: ${ch.viewers?.toLocaleString() || 0}]` : '⚪ [OFFLINE]';
+          opt.textContent = `${liveTag} ${ch.username} (${ch.platform.toUpperCase()})`;
+          if (ch.slug.toLowerCase() === currentSlug) opt.selected = true;
+          select.appendChild(opt);
+        });
+
+        // Si el seleccionado inicial no está en vivo, buscar el primero que sí lo esté
+        if (sorted.length > 0 && sorted[0].is_live) {
+          currentSlug = sorted[0].slug;
+          currentPlatform = sorted[0].platform;
+          select.value = `${currentPlatform}:${currentSlug}`;
+        }
+      } catch (e) {}
+    }
+
+    function onSelectStreamer(val) {
+      if (!val) return;
+      const [plat, slug] = val.split(':');
+      currentSlug = slug.toLowerCase();
+      currentPlatform = plat.toLowerCase();
+      loadStreamerData(currentSlug, currentPlatform);
+    }
+
+    // Inicializar
+    loadStreamersList().then(() => {
+      loadStreamerData(currentSlug, currentPlatform);
+    });
+
+    // Sondeo en vivo cada 10 segundos
+    setInterval(() => {
+      if (currentMode === 'live') {
+        loadStreamerData(currentSlug, currentPlatform);
+      }
+    }, 10000);
+
+    // Iniciar bucle de dibujo a 60fps
+    requestAnimationFrame(draw);
+  </script>
+</body>
+</html>
