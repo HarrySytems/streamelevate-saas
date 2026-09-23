@@ -197,19 +197,36 @@ async function pollKickChannel(channel) {
         if (realStartedAt && active.startedAt !== realStartedAt) {
           active.startedAt = realStartedAt;
         }
+        if (active.offlineSince) {
+          console.log(`[StreamElevate Colector] ¡Streamer reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
+          delete active.offlineSince;
+        }
       }
 
       // Guardar muestra de audiencia en SQLite
       recordAudience(active.id, 'kick', slug, now, viewers, category, title);
     } else {
-      // Estaba en vivo y acaba de terminar
       const active = memoryState.activeStreams.get(key);
       if (active) {
-        console.log(`[StreamElevate Colector] Directo finalizado: ${slug}. Calculando estadísticas finales...`);
+        // Período de gracia para microcaídas IRL (5 minutos = 300,000 ms)
+        if (!active.offlineSince) {
+          active.offlineSince = now;
+          console.log(`[StreamElevate Colector] Señal no detectada de ${slug}. Iniciando período de gracia (5 min por posible microcaída de WiFi/IRL)...`);
+          return;
+        }
+
+        const offlineDurationMs = now - active.offlineSince;
+        if (offlineDurationMs < 300000) {
+          // Aún dentro del período de tolerancia por caída de conexión
+          return;
+        }
+
+        // Más de 5 minutos offline continuo: el directo concluyó oficialmente
+        console.log(`[StreamElevate Colector] Directo finalizado oficialmente: ${slug} (offline > 5min). Calculando estadísticas finales...`);
         const stats = stmts.getChatStats.get(active.id);
         const samples = stmts.getAudienceSamples.all(active.id);
 
-        // Promedio ponderado por tiempo (integral)
+        // Promedio ponderado por tiempo (integral de trapecios)
         let weightedSum = 0;
         let totalDuration = 0;
         for (let i = 0; i < samples.length - 1; i++) {
@@ -221,7 +238,7 @@ async function pollKickChannel(channel) {
 
         stmts.closeStream.run({
           id: active.id,
-          ended_at: now,
+          ended_at: active.offlineSince || now,
           avg_viewers: Math.round(avgViewers),
           total_messages: stats?.total_messages || 0,
           unique_chatters: stats?.unique_chatters || 0
@@ -286,7 +303,8 @@ function getTelemetrySnapshot(slug, platform = 'kick') {
   return {
     slug: slug.toLowerCase(),
     platform,
-    is_live: Boolean(active),
+    is_live: Boolean(active && !active.offlineSince),
+    is_reconnecting: Boolean(active && active.offlineSince),
     stream_id: active ? active.id : null,
     current_viewers: active ? active.viewers : (channel?.current_viewers || 0),
     peak_viewers: active ? active.peak : 0,
