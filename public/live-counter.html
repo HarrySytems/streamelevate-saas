@@ -457,12 +457,13 @@
       document.getElementById('statChatters').textContent = `${data.chat_velocity?.chatters_per_min || 0} chatters`;
       
       // Tiempo duración
-      if (data.started_at && isLive) {
-        const diffMs = Date.now() - data.started_at;
-        const mins = Math.floor(diffMs / 60000);
-        const hrs = Math.floor(mins / 60);
+      const uptimeSec = data.uptime_seconds || (data.started_at ? Math.floor((Date.now() - data.started_at) / 1000) : 0);
+      if (uptimeSec > 0 && isLive) {
+        const totalMins = Math.floor(uptimeSec / 60);
+        const hrs = Math.floor(totalMins / 60);
+        const mins = totalMins % 60;
         document.getElementById('statDuration').textContent = hrs > 0 
-          ? `${hrs}h ${mins % 60}m` 
+          ? `${hrs}h ${mins}m` 
           : `${mins} min`;
       } else {
         document.getElementById('statDuration').textContent = isLive ? 'Recién iniciado' : 'Offline';

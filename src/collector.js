@@ -159,22 +159,31 @@ async function pollKickChannel(channel) {
     });
 
     if (isLive) {
+      const kickStartTime = data.livestream?.start_time || data.livestream?.created_at;
+      let realStartedAt = now;
+      if (kickStartTime) {
+        const parsed = Date.parse(kickStartTime.includes('Z') ? kickStartTime : kickStartTime.replace(' ', 'T') + 'Z');
+        if (Number.isFinite(parsed) && parsed > 0) {
+          realStartedAt = parsed;
+        }
+      }
+
       let active = memoryState.activeStreams.get(key);
       if (!active) {
-        // Iniciar nueva sesión de stream
-        const streamId = `kick_${slug}_${now}`;
+        // Iniciar nueva sesión de stream con el timestamp real de inicio de Kick
+        const streamId = `kick_${slug}_${realStartedAt}`;
         stmts.createStream.run({
           id: streamId,
           platform: 'kick',
           slug,
           title,
           category,
-          started_at: now,
+          started_at: realStartedAt,
           peak_viewers: viewers
         });
-        active = { id: streamId, slug, platform: 'kick', startedAt: now, peak: viewers, viewers, category, title };
+        active = { id: streamId, slug, platform: 'kick', startedAt: realStartedAt, peak: viewers, viewers, category, title };
         memoryState.activeStreams.set(key, active);
-        console.log(`[StreamElevate Colector] ¡STREAMER EN DIRECTO!: ${slug} con ${viewers} viewers.`);
+        console.log(`[StreamElevate Colector] ¡STREAMER EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
         
         // Conectar Pusher de inmediato
         if (chatroomId) {
@@ -185,6 +194,9 @@ async function pollKickChannel(channel) {
         active.peak = Math.max(active.peak, viewers);
         active.category = category;
         active.title = title;
+        if (realStartedAt && active.startedAt !== realStartedAt) {
+          active.startedAt = realStartedAt;
+        }
       }
 
       // Guardar muestra de audiencia en SQLite
