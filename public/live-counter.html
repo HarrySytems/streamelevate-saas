@@ -294,10 +294,11 @@
       <span>StreamElevate Live Viewers</span>
     </div>
     <div class="channel-selector">
-      <button class="channel-btn active" onclick="switchChannel('brunenger')">Brunenger (KICK)</button>
-      <button class="channel-btn" onclick="switchChannel('mrchoco')">MrChoco (KICK)</button>
-      <button class="channel-btn" onclick="switchChannel('westcol')">Westcol (KICK)</button>
-      <button class="channel-btn" onclick="switchChannel('davooxeneize')">Davo (KICK)</button>
+      <button class="channel-btn active" onclick="switchChannel('brunenger', 'kick')">Brunenger (KICK)</button>
+      <button class="channel-btn" onclick="switchChannel('mrchoco', 'kick')">MrChoco (KICK)</button>
+      <button class="channel-btn" onclick="switchChannel('auronplay', 'twitch')">Auronplay (TWITCH)</button>
+      <button class="channel-btn" onclick="switchChannel('rubius', 'twitch')">Rubius (TWITCH)</button>
+      <button class="channel-btn" onclick="switchChannel('elxokas', 'twitch')">Xokas (TWITCH)</button>
     </div>
   </header>
 
@@ -374,6 +375,7 @@
 
   <script>
     let currentSlug = 'brunenger';
+    let currentPlatform = 'kick';
     let previousViewers = 0;
     const historyPoints = [];
     const maxHistory = 30;
@@ -387,7 +389,7 @@
     async function fetchStreamerData() {
       const t0 = performance.now();
       try {
-        const res = await fetch(`${API_BASE}/streamers/${currentSlug}/live`);
+        const res = await fetch(`${API_BASE}/streamers/${currentSlug}/live?platform=${currentPlatform}`);
         const elapsed = Math.round(performance.now() - t0);
         document.getElementById('latencyTag').textContent = `(${elapsed}ms)`;
 
@@ -398,7 +400,7 @@
         console.warn('Fallo consulta a', API_BASE, 'reintentando fallback...', err.message);
         // Fallback alternativo al dominio en Render si local falla
         try {
-          const res = await fetch(`https://streamelevate.harrysystems.website/api/v1/streamers/${currentSlug}/live`);
+          const res = await fetch(`https://streamelevate.harrysystems.website/api/v1/streamers/${currentSlug}/live?platform=${currentPlatform}`);
           const data = await res.json();
           updateUI(data);
         } catch (e2) {}
@@ -536,8 +538,9 @@
       ctx.fill();
     }
 
-    function switchChannel(slug) {
+    function switchChannel(slug, platform = 'kick') {
       currentSlug = slug;
+      currentPlatform = platform;
       previousViewers = 0;
       historyPoints.length = 0;
       document.querySelectorAll('.channel-btn').forEach(btn => {

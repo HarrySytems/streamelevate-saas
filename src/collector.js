@@ -255,17 +255,153 @@ async function pollKickChannel(channel) {
   }
 }
 
+const TWITCH_GQL_QUERY = `
+  query GetStreamer($login: String!) {
+    user(login: $login) {
+      id
+      stream {
+        id
+        title
+        type
+        viewersCount
+        createdAt
+        game {
+          name
+        }
+      }
+    }
+  }
+`;
+
+async function pollTwitchChannel(channel) {
+  const slug = channel.slug.toLowerCase();
+  const key = `twitch_${slug}`;
+  const now = Date.now();
+
+  try {
+    const res = await fetch('https://gql.twitch.tv/gql', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Client-ID': 'kimne78kx3ncx6brgo4mv6wki5h1ko'
+      },
+      body: JSON.stringify({
+        query: TWITCH_GQL_QUERY,
+        variables: { login: slug }
+      })
+    });
+
+    if (!res.ok) return;
+    const data = await res.json();
+    const user = data.data?.user;
+    const stream = user?.stream;
+    const isLive = Boolean(stream && stream.type === 'live');
+    const viewers = isLive ? (Number(stream.viewersCount) || 0) : 0;
+    const category = isLive ? (stream.game?.name || 'General') : null;
+    const title = isLive ? (stream.title || '') : null;
+
+    let realStartedAt = now;
+    if (isLive && stream.createdAt) {
+      const parsed = Date.parse(stream.createdAt);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        realStartedAt = parsed;
+      }
+    }
+
+    stmts.updateChannelLive.run({
+      slug,
+      is_live: isLive ? 1 : 0,
+      current_viewers: viewers,
+      current_category: category,
+      current_title: title,
+      last_checked_at: now
+    });
+
+    if (isLive) {
+      let active = memoryState.activeStreams.get(key);
+      if (!active) {
+        const streamId = `twitch_${slug}_${realStartedAt}`;
+        stmts.createStream.run({
+          id: streamId,
+          platform: 'twitch',
+          slug,
+          title,
+          category,
+          started_at: realStartedAt,
+          peak_viewers: viewers
+        });
+        active = { id: streamId, slug, platform: 'twitch', startedAt: realStartedAt, peak: viewers, viewers, category, title };
+        memoryState.activeStreams.set(key, active);
+        console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
+      } else {
+        active.viewers = viewers;
+        active.peak = Math.max(active.peak, viewers);
+        active.category = category;
+        active.title = title;
+        if (realStartedAt && active.startedAt !== realStartedAt) {
+          active.startedAt = realStartedAt;
+        }
+        if (active.offlineSince) {
+          delete active.offlineSince;
+        }
+      }
+
+      recordAudience(active.id, 'twitch', slug, now, viewers, category, title);
+    } else {
+      const active = memoryState.activeStreams.get(key);
+      if (active) {
+        if (!active.offlineSince) {
+          active.offlineSince = now;
+          return;
+        }
+        if (now - active.offlineSince < 300000) {
+          return;
+        }
+
+        const stats = stmts.getChatStats.get(active.id);
+        const samples = stmts.getAudienceSamples.all(active.id);
+
+        let weightedSum = 0;
+        let totalDuration = 0;
+        for (let i = 0; i < samples.length - 1; i++) {
+          const dt = (samples[i + 1].timestamp - samples[i].timestamp) / 1000;
+          weightedSum += ((samples[i].viewers + samples[i + 1].viewers) / 2) * dt;
+          totalDuration += dt;
+        }
+        const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : active.viewers;
+
+        stmts.closeStream.run({
+          id: active.id,
+          ended_at: active.offlineSince || now,
+          avg_viewers: Math.round(avgViewers),
+          total_messages: stats?.total_messages || 0,
+          unique_chatters: stats?.unique_chatters || 0
+        });
+
+        memoryState.activeStreams.delete(key);
+      }
+    }
+  } catch (err) {}
+}
+
 async function runPollCycle() {
   if (isPolling) return;
   isPolling = true;
 
   try {
     const kickChannels = Array.from(memoryState.channels.values()).filter(c => c.platform === 'kick');
-    // Sondeo balanceado en lotes de 6 canales simultáneos para no saturar la red
-    const chunkSize = 6;
-    for (let i = 0; i < kickChannels.length; i += chunkSize) {
-      const chunk = kickChannels.slice(i, i + chunkSize);
+    const twitchChannels = Array.from(memoryState.channels.values()).filter(c => c.platform === 'twitch');
+
+    // Sondeo balanceado de Kick (lotes de 6)
+    for (let i = 0; i < kickChannels.length; i += 6) {
+      const chunk = kickChannels.slice(i, i + 6);
       await Promise.all(chunk.map(ch => pollKickChannel(ch)));
+    }
+
+    // Sondeo balanceado de Twitch (lotes de 8)
+    for (let i = 0; i < twitchChannels.length; i += 8) {
+      const chunk = twitchChannels.slice(i, i + 8);
+      await Promise.all(chunk.map(ch => pollTwitchChannel(ch)));
     }
   } finally {
     isPolling = false;
