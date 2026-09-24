@@ -402,16 +402,15 @@ function closeStreamSession(active) {
     const totalDurationSeconds = Math.max(1, (finalEndedAt - active.startedAt) / 1000);
     const coverageRatio = Math.min(1.0, observedSeconds / totalDurationSeconds);
 
-    // null = cobertura insuficiente. Se guarda como 0 en la columna pero se marca en coverage_ratio.
+    // null = cobertura insuficiente.
     // NO sustituir por active.viewers: ese valor no es una media, es el último dato puntual.
-    const avgViewers = averageViewers !== null ? averageViewers : 0;
 
     // Cerrar sesión + encolar reporte en transacción atómica
     closeAndEnqueue(active.id, () => {
       stmts.closeStream.run({
         id: active.id,
         ended_at: finalEndedAt,
-        avg_viewers: Math.round(avgViewers),
+        avg_viewers: averageViewers !== null ? Math.round(averageViewers) : null,
         coverage_ratio: Number(coverageRatio.toFixed(4)),
         last_live_at: active.lastLiveAt || finalEndedAt,
         first_offline_at: active.firstOfflineAt || active.offlineSince || finalEndedAt,
@@ -548,15 +547,13 @@ async function pollKickBatch(channels) {
         }
         // identity_pending: conservar sesión actual sin fragmentar; esperar más evidencia
 
-        const effectiveBroadcastId = (sessionAction.action === 'create')
-          ? (sessionAction.session.broadcastId || `prov_${slug}_${now}`)
-          : (active?.broadcastId || broadcastId || `prov_${slug}_${now}`);
-        const effectiveStreamId = `kick:${slug}:${effectiveBroadcastId}`;
+        const effectiveStreamId = active ? active.id : (sessionAction.session ? `kick:${slug}:${sessionAction.session.id}` : `kick:${slug}:fallback_${now}`);
+        const actualBroadcastId = active ? active.broadcastId : (sessionAction.session ? sessionAction.session.broadcastId : null);
 
         if (!active) {
           stmts.createStream.run({
             id: effectiveStreamId,
-            broadcast_id: effectiveBroadcastId,
+            broadcast_id: actualBroadcastId,
             platform: 'kick',
             slug,
             title,
@@ -567,8 +564,8 @@ async function pollKickBatch(channels) {
           });
           active = {
             id: effectiveStreamId,
-            broadcastId: effectiveBroadcastId,
-            isProvisional: !broadcastId,
+            broadcastId: actualBroadcastId,
+            isProvisional: !actualBroadcastId,
             slug,
             platform: 'kick',
             startedAt: realStartedAt,
@@ -581,7 +578,7 @@ async function pollKickBatch(channels) {
             chatroomId
           };
           memoryState.activeStreams.set(key, active);
-          console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO! [Matrícula ${effectiveBroadcastId}]: ${slug} con ${viewers} viewers.`);
+          console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO! [Matrícula ${actualBroadcastId || 'Provisional'}]: ${slug} con ${viewers} viewers.`);
           if (chatroomId) subscribeChatroom(chatroomId, slug);
         } else {
           // Continúa la misma emisión
@@ -757,15 +754,13 @@ async function pollTwitchBatch(channels) {
         }
         // identity_pending: conservar sesión actual sin fragmentar; esperar más evidencia
 
-        const effectiveBroadcastId = (sessionAction.action === 'create')
-          ? (sessionAction.session.broadcastId || `prov_${slug}_${now}`)
-          : (active?.broadcastId || broadcastId || `prov_${slug}_${now}`);
-        const effectiveStreamId = `twitch:${slug}:${effectiveBroadcastId}`;
+        const effectiveStreamId = active ? active.id : (sessionAction.session ? `twitch:${slug}:${sessionAction.session.id}` : `twitch:${slug}:fallback_${now}`);
+        const actualBroadcastId = active ? active.broadcastId : (sessionAction.session ? sessionAction.session.broadcastId : null);
 
         if (!active) {
           stmts.createStream.run({
             id: effectiveStreamId,
-            broadcast_id: effectiveBroadcastId,
+            broadcast_id: actualBroadcastId,
             platform: 'twitch',
             slug,
             title,
@@ -776,8 +771,8 @@ async function pollTwitchBatch(channels) {
           });
           active = {
             id: effectiveStreamId,
-            broadcastId: effectiveBroadcastId,
-            isProvisional: !broadcastId,
+            broadcastId: actualBroadcastId,
+            isProvisional: !actualBroadcastId,
             slug,
             platform: 'twitch',
             startedAt: realStartedAt,
@@ -789,7 +784,7 @@ async function pollTwitchBatch(channels) {
             avatarUrl
           };
           memoryState.activeStreams.set(key, active);
-          console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO! [Matrícula ${effectiveBroadcastId}]: ${slug} con ${viewers} viewers.`);
+          console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO! [Matrícula ${actualBroadcastId || 'Provisional'}]: ${slug} con ${viewers} viewers.`);
           subscribeTwitchChat(slug);
         } else {
           // Continúa la misma emisión

@@ -775,20 +775,30 @@
           img.src = currentAvatarUrl;
         }
 
-        // Cargar historial de muestras (1ra prioridad: muestras en RAM de /live sin latencia)
-        if (Array.isArray(currentStreamerData.samples) && currentStreamerData.samples.length > 0) {
-          currentSamples = currentStreamerData.samples;
-        } else if (currentStreamerData.stream_id && (!currentSamples || currentSamples.length === 0)) {
+        // Cargar historial de muestras (1ra prioridad: historial completo de SQLite, luego RAM)
+        let liveSamples = Array.isArray(currentStreamerData.samples) ? currentStreamerData.samples : [];
+        if (currentStreamerData.stream_id) {
           const sessRes = await fetch(`/api/v1/streamers/${slug}/session/${currentStreamerData.stream_id}`);
           if (sessRes.ok) {
             const sessData = await sessRes.json();
             if (Array.isArray(sessData.samples) && sessData.samples.length > 0) {
               currentSamples = sessData.samples;
+              // Añadir muestras muy recientes en RAM que quizás no estén procesadas en SQLite
+              if (liveSamples.length > 0) {
+                const lastDbSample = currentSamples[currentSamples.length - 1];
+                const freshSamples = liveSamples.filter(s => s.timestamp > lastDbSample.timestamp);
+                currentSamples = currentSamples.concat(freshSamples);
+              }
+            } else if (liveSamples.length > 0) {
+              currentSamples = liveSamples;
             }
-            if (sessData.stream?.avg_viewers) {
+            
+            if (sessData.stream?.avg_viewers !== undefined) {
               currentStreamerData.avg_viewers = sessData.stream.avg_viewers;
             }
           }
+        } else if (liveSamples.length > 0) {
+          currentSamples = liveSamples;
         }
 
         if (!currentSamples || currentSamples.length === 0) {

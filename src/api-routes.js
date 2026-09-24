@@ -80,8 +80,8 @@ router.get('/streamers/:slug/session/:sessionId', (req, res) => {
     total_samples_recorded: chart.totalSamples,
     first_observed_at: chart.firstObservedAt,
     last_observed_at: chart.lastObservedAt,
-    // coverage_insufficient: true cuando avg_viewers=0 y coverage_ratio<0.1
-    coverage_insufficient: stream && stream.avg_viewers === 0 && (stream.coverage_ratio || 1) < 0.1,
+    // coverage_insufficient: true cuando avg_viewers es null (no se pudo calcular media)
+    coverage_insufficient: stream ? stream.avg_viewers === null : false,
     chat,
     topChatters,
     chatTimeline
@@ -104,7 +104,7 @@ router.get('/streamers/:slug/recent', (req, res) => {
       peak_viewers: s.peak_viewers,
       avg_viewers: s.avg_viewers,
       coverage_ratio: s.coverage_ratio,
-      coverage_insufficient: s.avg_viewers === 0 && (s.coverage_ratio || 1) < 0.1,
+      coverage_insufficient: s.avg_viewers === null,
       total_messages: s.total_messages,
       unique_chatters: s.unique_chatters,
       status: s.status

@@ -7,7 +7,7 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const dbPath = path.join(dataDir, 'streamelevate.sqlite');
+const dbPath = process.env.TEST_DB_PATH || path.join(dataDir, 'streamelevate.sqlite');
 const db = new Database(dbPath);
 
 // Fast WAL mode for concurrency and durability
