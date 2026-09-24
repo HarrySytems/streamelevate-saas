@@ -69,6 +69,10 @@ function loadStreamersDatabase() {
         const activeRows = db.prepare("SELECT * FROM streams WHERE status = 'live'").all();
         activeRows.forEach(row => {
           const key = `${row.platform}_${row.slug.toLowerCase()}`;
+          let initialSamples = [];
+          try {
+            initialSamples = stmts.getAudienceSamples.all(row.id).map(s => ({ timestamp: s.timestamp, viewers: s.viewers }));
+          } catch(e) {}
           memoryState.activeStreams.set(key, {
             id: row.id,
             slug: row.slug.toLowerCase(),
@@ -77,7 +81,8 @@ function loadStreamersDatabase() {
             peak: row.peak_viewers || 0,
             viewers: row.peak_viewers || 0,
             category: row.category,
-            title: row.title
+            title: row.title,
+            recentSamples: initialSamples
           });
           if (row.platform === 'twitch') {
             twitchSubscribed.add(row.slug.toLowerCase());
@@ -427,7 +432,17 @@ async function pollKickBatch(channels) {
           }
         }
 
-        recordAudience(active.id, 'kick', slug, now, viewers, category, title);
+        if (!active.recentSamples) {
+          try {
+            active.recentSamples = stmts.getAudienceSamples.all(active.id).map(s => ({ timestamp: s.timestamp, viewers: s.viewers }));
+          } catch(e) { active.recentSamples = []; }
+        }
+        const lastSample = active.recentSamples[active.recentSamples.length - 1];
+        if (!lastSample || lastSample.viewers !== viewers || (now - lastSample.timestamp >= 20000)) {
+          active.recentSamples.push({ timestamp: now, viewers });
+          if (active.recentSamples.length > 1200) active.recentSamples.shift();
+          recordAudience(active.id, 'kick', slug, now, viewers, category, title);
+        }
       } else {
         const active = memoryState.activeStreams.get(key);
         if (active) {
@@ -582,7 +597,17 @@ async function pollTwitchBatch(channels) {
           }
         }
 
-        recordAudience(active.id, 'twitch', slug, now, viewers, category, title);
+        if (!active.recentSamples) {
+          try {
+            active.recentSamples = stmts.getAudienceSamples.all(active.id).map(s => ({ timestamp: s.timestamp, viewers: s.viewers }));
+          } catch(e) { active.recentSamples = []; }
+        }
+        const lastSample = active.recentSamples[active.recentSamples.length - 1];
+        if (!lastSample || lastSample.viewers !== viewers || (now - lastSample.timestamp >= 20000)) {
+          active.recentSamples.push({ timestamp: now, viewers });
+          if (active.recentSamples.length > 1200) active.recentSamples.shift();
+          recordAudience(active.id, 'twitch', slug, now, viewers, category, title);
+        }
       } else {
         const active = memoryState.activeStreams.get(key);
         if (active) {
@@ -694,12 +719,12 @@ function startCollector() {
   // Primer barrido completo al arrancar
   runFullSweep();
 
-  // Fast cycle cada 3 segundos para streams en directo (viewers instantáneos en tiempo real)
-  fastPollTimer = setInterval(runFastCycle, 3000);
+  // Fast cycle cada 4 segundos para streams en directo (frecuencia óptima en tiempo real)
+  fastPollTimer = setInterval(runFastCycle, 4000);
 
   // Full sweep cada 30 segundos para detectar inicios/apagados de streams
   fullSweepTimer = setInterval(runFullSweep, 30000);
-  console.log('[StreamElevate Colector] Cadencia Inteligente Dual iniciada (Fast: 3s en vivo, Full: 30s general)');
+  console.log('[StreamElevate Colector] Cadencia Inteligente Dual iniciada (Fast: 4s en vivo, Full: 30s general)');
 }
 
 function stopCollector() {
@@ -739,6 +764,7 @@ function getTelemetrySnapshot(slug, platform = 'kick') {
       msgs_per_min: recentChats.length,
       chatters_per_min: uniqueChattersSet.size
     },
+    samples: active?.recentSamples || [],
     last_checked_at: channel?.last_checked_at || null
   };
 }

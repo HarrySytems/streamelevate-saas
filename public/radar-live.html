@@ -263,7 +263,9 @@
         }
       }
       m[0] = ((2 * h[0] + h[1]) * delta[0] - h[0] * delta[1]) / (h[0] + h[1] || 1);
+      if (delta[0] === 0 || (m[0] > 0) !== (delta[0] > 0)) m[0] = 0;
       m[n - 1] = ((2 * h[n - 2] + h[n - 3]) * delta[n - 2] - h[n - 2] * delta[n - 3]) / (h[n - 2] + h[n - 3] || 1);
+      if (delta[n - 2] === 0 || (m[n - 1] > 0) !== (delta[n - 2] > 0)) m[n - 1] = 0;
       return m;
     }
 
@@ -610,6 +612,8 @@
         const barStep = 8;
         const now = performance.now() * 0.004;
         const headX = getX(visiblePoints[visiblePoints.length - 1].t);
+        const chatSpeed = currentStreamerData?.chat_velocity?.msgs_per_min || 0;
+        const chatBoost = Math.min(1.5, 1 + (chatSpeed / 250));
 
         for (let bx = MARGIN.left; bx <= headX; bx += barStep) {
           const normX = Math.max(0, Math.min(1, (bx - MARGIN.left) / graphW));
@@ -617,8 +621,8 @@
           const pVal = visiblePoints[pIdx]?.v || 0;
           const baseY = getY(pVal);
 
-          // Efecto de pulso senoidal orgánico estilo analizador de espectro de audio
-          const wave = (Math.sin(now * 2.2 + bx * 0.08) * 0.5 + 0.5) * 16;
+          // Efecto de pulso senoidal orgánico estilo analizador de espectro de audio reactivo a chat
+          const wave = (Math.sin(now * 2.2 + bx * 0.08) * 0.5 + 0.5) * 16 * chatBoost;
           const maxAvail = Math.max(0, MARGIN.bottom - baseY);
           const barH = Math.max(4, Math.min(maxAvail, maxAvail * 0.45 + wave));
 
@@ -758,8 +762,10 @@
           img.src = currentAvatarUrl;
         }
 
-        // Cargar historial de muestras desde la sesión activa
-        if (currentStreamerData.stream_id) {
+        // Cargar historial de muestras (1ra prioridad: muestras en RAM de /live sin latencia)
+        if (Array.isArray(currentStreamerData.samples) && currentStreamerData.samples.length > 0) {
+          currentSamples = currentStreamerData.samples;
+        } else if (currentStreamerData.stream_id && (!currentSamples || currentSamples.length === 0)) {
           const sessRes = await fetch(`/api/v1/streamers/${slug}/session/${currentStreamerData.stream_id}`);
           if (sessRes.ok) {
             const sessData = await sessRes.json();
@@ -779,7 +785,7 @@
           ];
         }
 
-        // Si el stream está en directo, sincronizar el último punto con la hora y viewers actuales
+        // Si el stream está en directo, sincronizar el último punto con la hora y viewers actuales sin destruir timestamps
         if (currentStreamerData.is_live && currentSamples.length > 0) {
           const now = Date.now();
           const lastSample = currentSamples[currentSamples.length - 1];
@@ -787,7 +793,6 @@
             currentSamples.push({ timestamp: now, viewers: targetViewerCount });
           } else {
             lastSample.viewers = targetViewerCount;
-            lastSample.timestamp = now;
           }
         }
 
