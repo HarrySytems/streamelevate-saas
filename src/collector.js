@@ -73,8 +73,11 @@ function loadStreamersDatabase() {
           try {
             initialSamples = stmts.getAudienceSamples.all(row.id).map(s => ({ timestamp: s.timestamp, viewers: s.viewers }));
           } catch(e) {}
+          const idParts = row.id.split('_');
+          const broadcastId = idParts.slice(2).join('_');
           memoryState.activeStreams.set(key, {
             id: row.id,
+            broadcastId,
             slug: row.slug.toLowerCase(),
             platform: row.platform,
             startedAt: row.started_at,
@@ -321,6 +324,44 @@ async function getKickAppToken() {
   }
 }
 
+function closeStreamSession(active) {
+  try {
+    const stats = stmts.getChatStats.get(active.id);
+    const samples = stmts.getAudienceSamples.all(active.id);
+
+    let weightedSum = 0;
+    let totalDuration = 0;
+    for (let i = 0; i < samples.length - 1; i++) {
+      const dt = (samples[i + 1].timestamp - samples[i].timestamp) / 1000;
+      // Si hubo un corte de red o desconexión mayor a 120s, no interpolar en el vacío (Recomendación Codex)
+      if (dt > 120) continue;
+      weightedSum += ((samples[i].viewers + samples[i + 1].viewers) / 2) * dt;
+      totalDuration += dt;
+    }
+    const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : (active.viewers || 0);
+
+    // El final se registra con el momento exacto de desconexión (active.offlineSince),
+    // SIN sumar los 5 minutos de espera como tiempo de stream ni audiencia cero (Recomendación Codex)
+    const finalEndedAt = active.offlineSince || Date.now();
+
+    stmts.closeStream.run({
+      id: active.id,
+      ended_at: finalEndedAt,
+      avg_viewers: Math.round(avgViewers),
+      total_messages: stats?.total_messages || 0,
+      unique_chatters: stats?.unique_chatters || 0
+    });
+
+    if (active.platform === 'kick' && active.chatroomId) {
+      unsubscribeChatroom(active.chatroomId);
+    } else if (active.platform === 'twitch') {
+      unsubscribeTwitchChat(active.slug);
+    }
+  } catch (err) {
+    console.error(`[StreamElevate Colector] Error cerrando sesión ${active.id}:`, err.message);
+  }
+}
+
 async function pollKickBatch(channels) {
   if (!channels || channels.length === 0) return;
   const token = await getKickAppToken();
@@ -373,6 +414,7 @@ async function pollKickBatch(channels) {
 
       const stream = item.stream;
       const isLive = Boolean(stream && stream.is_live);
+      const platformBroadcastId = stream?.id ? String(stream.id) : null;
       const viewers = isLive ? (Number(stream.viewer_count) || 0) : 0;
       const category = isLive ? (item.category?.name || 'General') : null;
       const title = isLive ? (item.stream_title || '') : null;
@@ -387,6 +429,10 @@ async function pollKickBatch(channels) {
         }
       }
 
+      // Matrícula oficial de la emisión (ID de Kick o timestamp de inicio si no viniera)
+      const broadcastId = platformBroadcastId || `t_${realStartedAt}`;
+      const streamId = `kick_${slug}_${broadcastId}`;
+
       stmts.updateChannelLive.run({
         platform: 'kick',
         slug,
@@ -397,10 +443,18 @@ async function pollKickBatch(channels) {
         last_checked_at: now
       });
 
+      let active = memoryState.activeStreams.get(key);
+
       if (isLive) {
-        let active = memoryState.activeStreams.get(key);
+        // ¿Cambió la matrícula de la emisión? (El streamer reinició y empezó una emisión distinta B)
+        if (active && active.broadcastId && active.broadcastId !== broadcastId) {
+          console.log(`[StreamElevate Colector] ¡Nueva emisión B detectada para ${slug} (Kick)! Matrícula anterior: ${active.broadcastId} -> Nueva: ${broadcastId}. Cerrando emisión previa...`);
+          closeStreamSession(active);
+          memoryState.activeStreams.delete(key);
+          active = null;
+        }
+
         if (!active) {
-          const streamId = `kick_${slug}_${realStartedAt}`;
           stmts.createStream.run({
             id: streamId,
             platform: 'kick',
@@ -410,24 +464,34 @@ async function pollKickBatch(channels) {
             started_at: realStartedAt,
             peak_viewers: viewers
           });
-          active = { id: streamId, slug, platform: 'kick', startedAt: realStartedAt, peak: viewers, viewers, category, title, avatarUrl };
+          active = { 
+            id: streamId, 
+            broadcastId, 
+            slug, 
+            platform: 'kick', 
+            startedAt: realStartedAt, 
+            peak: viewers, 
+            viewers, 
+            category, 
+            title, 
+            avatarUrl,
+            chatroomId
+          };
           memoryState.activeStreams.set(key, active);
-          console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
+          console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO! [Matrícula ${broadcastId}]: ${slug} con ${viewers} viewers. Inicio: ${new Date(realStartedAt).toISOString()}`);
 
           if (chatroomId) {
             subscribeChatroom(chatroomId, slug);
           }
         } else {
+          // Continúa la misma emisión (misma matrícula)
           active.viewers = viewers;
           active.peak = Math.max(active.peak, viewers);
           active.category = category;
           active.title = title;
           active.avatarUrl = avatarUrl;
-          if (realStartedAt && active.startedAt !== realStartedAt) {
-            active.startedAt = realStartedAt;
-          }
           if (active.offlineSince) {
-            console.log(`[StreamElevate Colector] ¡Streamer Kick reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
+            console.log(`[StreamElevate Colector] ¡Streamer Kick reconectado a la misma emisión [Matrícula ${broadcastId}]: ${slug}! Cancelando cuenta atrás.`);
             delete active.offlineSince;
           }
         }
@@ -440,15 +504,14 @@ async function pollKickBatch(channels) {
         const lastSample = active.recentSamples[active.recentSamples.length - 1];
         if (!lastSample || lastSample.viewers !== viewers || (now - lastSample.timestamp >= 20000)) {
           active.recentSamples.push({ timestamp: now, viewers });
-          if (active.recentSamples.length > 25000) active.recentSamples.shift(); // Soporta 24h+ de directo continuo sin perder el inicio
+          if (active.recentSamples.length > 50000) active.recentSamples.shift();
           recordAudience(active.id, 'kick', slug, now, viewers, category, title);
         }
       } else {
-        const active = memoryState.activeStreams.get(key);
         if (active) {
           if (!active.offlineSince) {
             active.offlineSince = now;
-            console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Kick). Iniciando gracia (5 min por posible microcaída de WiFi/IRL)...`);
+            console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Kick) [Matrícula ${active.broadcastId}]. Esperando 5 min por microcorte de red...`);
             continue;
           }
 
@@ -456,31 +519,9 @@ async function pollKickBatch(channels) {
             continue;
           }
 
-          console.log(`[StreamElevate Colector] Directo Kick finalizado: ${slug} (offline > 5min).`);
-          const stats = stmts.getChatStats.get(active.id);
-          const samples = stmts.getAudienceSamples.all(active.id);
-
-          let weightedSum = 0;
-          let totalDuration = 0;
-          for (let i = 0; i < samples.length - 1; i++) {
-            const dt = (samples[i + 1].timestamp - samples[i].timestamp) / 1000;
-            weightedSum += ((samples[i].viewers + samples[i + 1].viewers) / 2) * dt;
-            totalDuration += dt;
-          }
-          const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : active.viewers;
-
-          stmts.closeStream.run({
-            id: active.id,
-            ended_at: active.offlineSince || now,
-            avg_viewers: Math.round(avgViewers),
-            total_messages: stats?.total_messages || 0,
-            unique_chatters: stats?.unique_chatters || 0
-          });
-
+          console.log(`[StreamElevate Colector] Directo Kick finalizado: ${slug} [Matrícula ${active.broadcastId}] (offline > 5min). Registrando fin en ${new Date(active.offlineSince).toISOString()}`);
+          closeStreamSession(active);
           memoryState.activeStreams.delete(key);
-          if (chatroomId) {
-            unsubscribeChatroom(chatroomId);
-          }
         }
       }
     }
@@ -555,6 +596,11 @@ async function pollTwitchBatch(channels) {
         }
       }
 
+      // Matrícula oficial de Twitch (stream.id o timestamp de inicio si no viniera)
+      const platformBroadcastId = stream?.id ? String(stream.id) : null;
+      const broadcastId = platformBroadcastId || `t_${realStartedAt}`;
+      const streamId = `twitch_${slug}_${broadcastId}`;
+
       stmts.updateChannelLive.run({
         platform: 'twitch',
         slug,
@@ -565,10 +611,18 @@ async function pollTwitchBatch(channels) {
         last_checked_at: now
       });
 
+      let active = memoryState.activeStreams.get(key);
+
       if (isLive) {
-        let active = memoryState.activeStreams.get(key);
+        // ¿Cambió la matrícula de la emisión? (El streamer reinició y empezó una emisión distinta B)
+        if (active && active.broadcastId && active.broadcastId !== broadcastId) {
+          console.log(`[StreamElevate Colector] ¡Nueva emisión B detectada para ${slug} (Twitch)! Matrícula anterior: ${active.broadcastId} -> Nueva: ${broadcastId}. Cerrando emisión previa...`);
+          closeStreamSession(active);
+          memoryState.activeStreams.delete(key);
+          active = null;
+        }
+
         if (!active) {
-          const streamId = `twitch_${slug}_${realStartedAt}`;
           stmts.createStream.run({
             id: streamId,
             platform: 'twitch',
@@ -578,21 +632,30 @@ async function pollTwitchBatch(channels) {
             started_at: realStartedAt,
             peak_viewers: viewers
           });
-          active = { id: streamId, slug, platform: 'twitch', startedAt: realStartedAt, peak: viewers, viewers, category, title, avatarUrl };
+          active = { 
+            id: streamId, 
+            broadcastId, 
+            slug, 
+            platform: 'twitch', 
+            startedAt: realStartedAt, 
+            peak: viewers, 
+            viewers, 
+            category, 
+            title, 
+            avatarUrl 
+          };
           memoryState.activeStreams.set(key, active);
-          console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO!: ${slug} con ${viewers} viewers. Inicio real: ${new Date(realStartedAt).toISOString()}`);
+          console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO! [Matrícula ${broadcastId}]: ${slug} con ${viewers} viewers. Inicio: ${new Date(realStartedAt).toISOString()}`);
           subscribeTwitchChat(slug);
         } else {
+          // Continúa la misma emisión (misma matrícula)
           active.viewers = viewers;
           active.peak = Math.max(active.peak, viewers);
           active.category = category;
           active.title = title;
           if (avatarUrl) active.avatarUrl = avatarUrl;
-          if (realStartedAt && active.startedAt !== realStartedAt) {
-            active.startedAt = realStartedAt;
-          }
           if (active.offlineSince) {
-            console.log(`[StreamElevate Colector] ¡Twitch streamer reconectado tras microcorte IRL!: ${slug}. Continuando sesión ${active.id}.`);
+            console.log(`[StreamElevate Colector] ¡Twitch streamer reconectado a la misma emisión [Matrícula ${broadcastId}]: ${slug}! Cancelando cuenta atrás.`);
             delete active.offlineSince;
           }
         }
@@ -605,15 +668,14 @@ async function pollTwitchBatch(channels) {
         const lastSample = active.recentSamples[active.recentSamples.length - 1];
         if (!lastSample || lastSample.viewers !== viewers || (now - lastSample.timestamp >= 20000)) {
           active.recentSamples.push({ timestamp: now, viewers });
-          if (active.recentSamples.length > 25000) active.recentSamples.shift(); // Soporta 24h+ de directo continuo sin perder el inicio
+          if (active.recentSamples.length > 50000) active.recentSamples.shift();
           recordAudience(active.id, 'twitch', slug, now, viewers, category, title);
         }
       } else {
-        const active = memoryState.activeStreams.get(key);
         if (active) {
           if (!active.offlineSince) {
             active.offlineSince = now;
-            console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Twitch). Iniciando gracia (5 min por posible microcaída de WiFi/IRL)...`);
+            console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Twitch) [Matrícula ${active.broadcastId}]. Esperando 5 min por microcorte de red...`);
             continue;
           }
 
@@ -621,29 +683,9 @@ async function pollTwitchBatch(channels) {
             continue;
           }
 
-          console.log(`[StreamElevate Colector] Directo Twitch finalizado: ${slug} (offline > 5min).`);
-          const stats = stmts.getChatStats.get(active.id);
-          const samples = stmts.getAudienceSamples.all(active.id);
-
-          let weightedSum = 0;
-          let totalDuration = 0;
-          for (let s = 0; s < samples.length - 1; s++) {
-            const dt = (samples[s + 1].timestamp - samples[s].timestamp) / 1000;
-            weightedSum += ((samples[s].viewers + samples[s + 1].viewers) / 2) * dt;
-            totalDuration += dt;
-          }
-          const avgViewers = totalDuration > 0 ? (weightedSum / totalDuration) : active.viewers;
-
-          stmts.closeStream.run({
-            id: active.id,
-            ended_at: active.offlineSince || now,
-            avg_viewers: Math.round(avgViewers),
-            total_messages: stats?.total_messages || 0,
-            unique_chatters: stats?.unique_chatters || 0
-          });
-
+          console.log(`[StreamElevate Colector] Directo Twitch finalizado: ${slug} [Matrícula ${active.broadcastId}] (offline > 5min). Registrando fin en ${new Date(active.offlineSince).toISOString()}`);
+          closeStreamSession(active);
           memoryState.activeStreams.delete(key);
-          unsubscribeTwitchChat(slug);
         }
       }
     }
