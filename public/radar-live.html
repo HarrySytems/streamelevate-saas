@@ -330,6 +330,7 @@
     let targetViewerCount = 0;
     let displayedViewerCount = 0;
     let lastSyncTime = Date.now();
+    let currentInterpolator = null;
 
     const canvas = document.getElementById('radarCanvas');
     const ctx = canvas.getContext('2d');
@@ -598,12 +599,14 @@
       const visiblePoints = densePoints.slice(0, activeLength);
       if (visiblePoints.length < 2) return;
 
-      // Suavizado e interpolación de espectadores en vivo
+      // Suavizado e interpolación de espectadores en vivo (Sin mutar array de datos original)
       if (currentMode === 'live' && targetViewerCount > 0) {
         displayedViewerCount += (targetViewerCount - displayedViewerCount) * 0.14;
-        const head = visiblePoints[visiblePoints.length - 1];
-        head.v = displayedViewerCount;
       }
+      const head = visiblePoints[visiblePoints.length - 1];
+      const hX = getX(head.t);
+      const hV = (currentMode === 'live' && targetViewerCount > 0) ? displayedViewerCount : head.v;
+      const hY = getY(hV);
 
       // ==========================================
       // 10. BARRAS DE ECUALIZADOR NEÓN (Debajo de la curva - Estilo Westcol Original)
@@ -611,20 +614,23 @@
       if (showEqualizerBars) {
         const barStep = 8;
         const now = performance.now() * 0.004;
-        const headX = getX(visiblePoints[visiblePoints.length - 1].t);
         const chatSpeed = currentStreamerData?.chat_velocity?.msgs_per_min || 0;
         const chatBoost = Math.min(1.5, 1 + (chatSpeed / 250));
 
-        for (let bx = MARGIN.left; bx <= headX; bx += barStep) {
+        for (let bx = MARGIN.left; bx <= hX; bx += barStep) {
           const normX = Math.max(0, Math.min(1, (bx - MARGIN.left) / graphW));
-          const pIdx = Math.min(visiblePoints.length - 1, Math.floor(normX * visiblePoints.length));
-          const pVal = visiblePoints[pIdx]?.v || 0;
+          const targetT = firstT + normX * timeSpan;
+          const pVal = currentInterpolator ? currentInterpolator(targetT) : 0;
           const baseY = getY(pVal);
 
           // Efecto de pulso senoidal orgánico estilo analizador de espectro de audio reactivo a chat
           const wave = (Math.sin(now * 2.2 + bx * 0.08) * 0.5 + 0.5) * 16 * chatBoost;
           const maxAvail = Math.max(0, MARGIN.bottom - baseY);
-          const barH = Math.max(4, Math.min(maxAvail, maxAvail * 0.45 + wave));
+          if (maxAvail <= 1.5) continue; // Cerca de cero no dibuja barra innecesaria
+
+          // La barra respeta el espacio y nunca sobrepasa la curva neón (Corrección Codex)
+          const barH = Math.min(maxAvail, maxAvail * 0.45 + wave);
+          if (barH <= 1.5) continue;
 
           const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
           barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
@@ -651,8 +657,12 @@
       ctx.fillStyle = areaGrad;
       ctx.beginPath();
       ctx.moveTo(getX(visiblePoints[0].t), MARGIN.bottom);
-      visiblePoints.forEach(p => ctx.lineTo(getX(p.t), getY(p.v)));
-      ctx.lineTo(getX(visiblePoints[visiblePoints.length - 1].t), MARGIN.bottom);
+      visiblePoints.forEach((p, idx) => {
+        const isLast = (idx === visiblePoints.length - 1);
+        const py = isLast ? hY : getY(p.v);
+        ctx.lineTo(getX(p.t), py);
+      });
+      ctx.lineTo(hX, MARGIN.bottom);
       ctx.closePath();
       ctx.fill();
 
@@ -666,8 +676,10 @@
       ctx.shadowBlur = 16;
       ctx.beginPath();
       visiblePoints.forEach((p, idx) => {
-        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
-        else ctx.lineTo(getX(p.t), getY(p.v));
+        const isLast = (idx === visiblePoints.length - 1);
+        const py = isLast ? hY : getY(p.v);
+        if (idx === 0) ctx.moveTo(getX(p.t), py);
+        else ctx.lineTo(getX(p.t), py);
       });
       ctx.stroke();
       ctx.restore();
@@ -678,8 +690,10 @@
       ctx.lineWidth = 1;
       ctx.beginPath();
       visiblePoints.forEach((p, idx) => {
-        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
-        else ctx.lineTo(getX(p.t), getY(p.v));
+        const isLast = (idx === visiblePoints.length - 1);
+        const py = isLast ? hY : getY(p.v);
+        if (idx === 0) ctx.moveTo(getX(p.t), py);
+        else ctx.lineTo(getX(p.t), py);
       });
       ctx.stroke();
       ctx.restore();
@@ -687,10 +701,6 @@
       // ==========================================
       // 13. AGUJA / PLAYHEAD EN LA PUNTA DE LA GRÁFICA
       // ==========================================
-      const head = visiblePoints[visiblePoints.length - 1];
-      const hX = getX(head.t);
-      const hY = getY(head.v);
-
       // Halo pulsante exterior
       ctx.save();
       ctx.strokeStyle = neon;
@@ -709,7 +719,7 @@
       ctx.fill();
 
       // Badge flotante sobre la punta con el número exacto
-      const badgeText = `${Math.round(head.v).toLocaleString()} VIEWERS`;
+      const badgeText = `${Math.round(hV).toLocaleString()} VIEWERS`;
       ctx.font = '900 13px Arial';
       const bW = ctx.measureText(badgeText).width + 16;
       const bH = 24;
@@ -778,9 +788,12 @@
         if (!currentSamples || currentSamples.length === 0) {
           const now = Date.now();
           const curV = currentStreamerData.current_viewers || 0;
+          let startT = currentStreamerData.started_at;
+          if (typeof startT === 'string') startT = new Date(startT).getTime();
+          if (!startT || isNaN(startT) || startT >= now) startT = now - 60000;
+          // Datos 100% reales planos si aún no hay historial previo acumulado (Corrección Codex #4)
           currentSamples = [
-            { timestamp: (currentStreamerData.started_at || now - 60000), viewers: Math.round(curV * 0.8) },
-            { timestamp: now - 30000, viewers: Math.round(curV * 0.95) },
+            { timestamp: Math.min(startT, now - 5000), viewers: curV },
             { timestamp: now, viewers: curV }
           ];
         }
@@ -799,6 +812,7 @@
         // Remuestrear suavemente con PCHIP a puntos densos de alta fidelidad
         const cleaned = cleanSamples(currentSamples);
         const interp = createPchipInterpolator(cleaned);
+        currentInterpolator = interp; // Asignación clave para el cálculo exacto de las barras
         const t0 = cleaned[0].t;
         const t1 = cleaned[cleaned.length - 1].t;
         const span = Math.max(1000, t1 - t0);
