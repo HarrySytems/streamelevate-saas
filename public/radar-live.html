@@ -22,10 +22,10 @@
     body {
       background-color: var(--bg);
       color: var(--text-main);
-      min-height: 100vh;
+      height: 100vh;
       display: flex;
       flex-direction: column;
-      overflow-x: hidden;
+      overflow: hidden;
     }
     .topbar {
       background: #0f172a;
@@ -36,6 +36,7 @@
       justify-content: space-between;
       gap: 16px;
       flex-wrap: wrap;
+      flex-shrink: 0;
     }
     .brand {
       display: flex;
@@ -97,9 +98,9 @@
       font-weight: 800;
     }
     .btn-twitch.active {
-      background: var(--twitch-purple);
-      color: #ffffff;
-      border-color: var(--twitch-purple);
+      background: var(--twitch-purple) !important;
+      color: #ffffff !important;
+      border-color: var(--twitch-purple) !important;
     }
     .btn-replay {
       background: #0284c7;
@@ -108,17 +109,25 @@
     .btn-replay:hover {
       background: #0369a1;
     }
+    .btn-replay.active {
+      background: #38bdf8 !important;
+      color: #000000 !important;
+      border-color: #38bdf8 !important;
+      font-weight: 800;
+    }
 
     .viewport {
       flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: 12px 20px;
+      min-height: 0;
     }
     .canvas-card {
       width: 100%;
       max-width: 1280px;
+      max-height: calc(100vh - 82px);
       aspect-ratio: 16 / 9;
       background: #090f15;
       border: 1px solid #1a2634;
@@ -135,14 +144,14 @@
 
     .status-pill {
       position: absolute;
-      bottom: 16px;
+      bottom: 12px;
       left: 20px;
-      background: rgba(13, 19, 27, 0.85);
-      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(13, 19, 27, 0.92);
+      border: 1px solid rgba(255,255,255,0.14);
       backdrop-filter: blur(8px);
-      padding: 6px 14px;
+      padding: 5px 14px;
       border-radius: 20px;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       color: var(--text-muted);
       display: flex;
       align-items: center;
@@ -176,8 +185,12 @@
         <option value="">Cargando canales...</option>
       </select>
 
-      <button id="btnLiveMode" class="btn active">
-        🔴 Modo En Vivo (15s)
+      <button id="btnLiveMode" class="btn active" onclick="setMode('live')">
+        🔴 Modo En Vivo
+      </button>
+
+      <button id="btnReplayMode" class="btn btn-replay" onclick="startReplay()">
+        ⚡ Simular Reproducción Ecualizador
       </button>
 
       <button id="btnBarsToggle" class="btn" onclick="toggleEqualizerBars()">
@@ -201,16 +214,40 @@
   </main>
 
   <script>
-    let currentSlug = 'westcol';
+    // Parámetros de URL opcionales (ej: ?streamer=kick:brunenger o ?channel=illojuan)
+    const urlParams = new URLSearchParams(window.location.search);
+    const paramStreamer = urlParams.get('streamer') || urlParams.get('channel');
+    let hasCustomParam = false;
+
+    let currentSlug = 'brunenger';
     let currentPlatform = 'kick';
+
+    if (paramStreamer) {
+      hasCustomParam = true;
+      if (paramStreamer.includes(':')) {
+        const [p, s] = paramStreamer.split(':');
+        currentPlatform = p.toLowerCase();
+        currentSlug = s.toLowerCase();
+      } else {
+        currentSlug = paramStreamer.toLowerCase();
+      }
+    }
+
     let currentStreamerData = null;
     let currentSamples = [];
-    let processedPoints = []; // Subsampled points for smooth Bézier drawing
+    let processedPoints = []; // Muestras de la sesión
 
     let streamerAvatarImg = null;
     let currentAvatarUrl = '';
 
     let showEqualizerBars = true;
+    let currentMode = 'live'; // 'live' | 'replay'
+    let replayProgress = 1;
+    let replayAnimId = null;
+
+    let targetViewerCount = 0;
+    let displayedViewerCount = 0;
+    let lastSyncTime = Date.now();
 
     const canvas = document.getElementById('radarCanvas');
     const ctx = canvas.getContext('2d');
@@ -219,13 +256,70 @@
     const MARGIN = {
       left: 85,
       right: 45,
-      top: 110,
-      bottom: 650
+      top: 100,
+      bottom: 630
     };
 
     function toggleEqualizerBars() {
       showEqualizerBars = !showEqualizerBars;
       document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
+    }
+
+    function updateButtonTheme() {
+      const isTwitch = (currentPlatform === 'twitch');
+      const liveBtn = document.getElementById('btnLiveMode');
+      if (liveBtn) {
+        liveBtn.classList.toggle('btn-twitch', isTwitch);
+      }
+    }
+
+    function setMode(mode) {
+      currentMode = mode;
+      document.getElementById('btnLiveMode').classList.toggle('active', mode === 'live');
+      document.getElementById('btnReplayMode').classList.toggle('active', mode === 'replay');
+      if (mode === 'live') {
+        if (replayAnimId) cancelAnimationFrame(replayAnimId);
+        replayProgress = 1;
+        const neon = (currentPlatform === 'kick') ? '#53fc18' : '#a970ff';
+        document.getElementById('liveDot').style.background = neon;
+        document.getElementById('liveDot').style.boxShadow = `0 0 10px ${neon}`;
+        updateStatusText();
+      }
+    }
+
+    function startReplay() {
+      setMode('replay');
+      replayProgress = 0;
+      const durationMs = 12000; // 12 segundos de animación fluida de inicio a presente
+      const startTime = performance.now();
+
+      function step(now) {
+        if (currentMode !== 'replay') return;
+        const elapsed = now - startTime;
+        replayProgress = Math.min(1, elapsed / durationMs);
+
+        const pct = Math.round(replayProgress * 100);
+        document.getElementById('statusText').textContent = `⚡ Reproduciendo evolución temporal: ${pct}% • Viendo cómo sube y baja la audiencia`;
+        document.getElementById('liveDot').style.background = '#38bdf8';
+        document.getElementById('liveDot').style.boxShadow = '0 0 10px #38bdf8';
+
+        if (replayProgress < 1) {
+          replayAnimId = requestAnimationFrame(step);
+        } else {
+          document.getElementById('statusText').textContent = `✅ Simulación completada (100%). Haz clic en '🔴 Modo En Vivo' para telemetría en tiempo real.`;
+        }
+      }
+
+      if (replayAnimId) cancelAnimationFrame(replayAnimId);
+      replayAnimId = requestAnimationFrame(step);
+    }
+
+    function updateStatusText() {
+      if (currentMode === 'replay') return;
+      const secSinceSync = Math.max(0, Math.floor((Date.now() - lastSyncTime) / 1000));
+      const vCount = Math.round(displayedViewerCount || currentStreamerData?.current_viewers || 0);
+      document.getElementById('statusText').textContent = 
+        `🟢 TELEMETRÍA EN DIRECTO • ${currentSlug.toUpperCase()} (${currentPlatform.toUpperCase()}) • ${vCount.toLocaleString()} VIEWERS • Sincronizado hace ${secSinceSync}s • ${processedPoints.length} muestras`;
     }
 
     // ==========================================
@@ -238,7 +332,6 @@
       const H = canvas.height;
       const isKick = (currentPlatform === 'kick');
       const neon = isKick ? '#53fc18' : '#a970ff';
-      const areaColor = isKick ? 'rgba(83, 252, 24, 0.35)' : 'rgba(169, 112, 255, 0.35)';
 
       // 1. Fondo Broadcast Oscuro
       const bg = ctx.createLinearGradient(0, 0, W, H);
@@ -247,9 +340,7 @@
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
 
-      // 2. Fondo Técnico Listo
-
-      // 3. Marca de Agua Gigante (KICK o TWITCH)
+      // 2. Marca de Agua Gigante (KICK o TWITCH)
       ctx.save();
       ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
       ctx.font = '900 160px Arial, sans-serif';
@@ -258,7 +349,7 @@
       ctx.fillText(currentPlatform.toUpperCase(), (MARGIN.left + (W - MARGIN.right)) / 2, (MARGIN.top + MARGIN.bottom) / 2);
       ctx.restore();
 
-      // 4. Barra Neón Superior
+      // 3. Barra Neón Superior
       const accent = ctx.createLinearGradient(0, 0, W, 0);
       accent.addColorStop(0, 'transparent');
       accent.addColorStop(0.2, neon);
@@ -268,14 +359,14 @@
       ctx.fillStyle = accent;
       ctx.fillRect(0, 0, W, 3);
 
-      // 5. Header del Streamer (Arriba)
+      // 4. Header del Streamer (Arriba)
       const streamerName = (currentStreamerData?.slug || currentSlug).toUpperCase();
       const title = currentStreamerData?.title || 'Emisión en Directo';
       const category = currentStreamerData?.category || 'General';
       const isLive = Boolean(currentStreamerData?.is_live);
 
       // Avatar con foto real o fallback
-      const avX = 65, avY = 60, avR = 30;
+      const avX = 65, avY = 56, avR = 28;
       ctx.save();
       ctx.strokeStyle = neon;
       ctx.lineWidth = 2.5;
@@ -307,33 +398,33 @@
       ctx.save();
       ctx.fillStyle = neon;
       ctx.beginPath();
-      ctx.arc(avX + 22, avY + 22, 10, 0, Math.PI * 2);
+      ctx.arc(avX + 20, avY + 20, 9.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#000000';
       ctx.font = '900 11px Arial';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(isKick ? 'K' : 'T', avX + 22, avY + 23);
+      ctx.fillText(isKick ? 'K' : 'T', avX + 20, avY + 21);
       ctx.restore();
 
       // Textos de Cabecera
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 28px Arial, sans-serif';
+      ctx.font = '900 26px Arial, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(streamerName, 115, 52);
+      ctx.fillText(streamerName, 110, 48);
 
       // Badge LIVE
       ctx.fillStyle = isLive ? '#ef4444' : '#475569';
       ctx.beginPath();
-      ctx.roundRect(115, 64, isLive ? 68 : 78, 20, 4);
+      ctx.roundRect(110, 60, isLive ? 68 : 78, 20, 4);
       ctx.fill();
       ctx.fillStyle = '#ffffff';
       ctx.font = '800 11px Arial';
-      ctx.fillText(isLive ? '🔴 EN VIVO' : 'OFFLINE', 123, 78);
+      ctx.fillText(isLive ? '🔴 EN VIVO' : 'OFFLINE', 118, 74);
 
       // Título y Categoría
       ctx.fillStyle = '#94a3b8';
-      ctx.font = '500 14px Arial';
+      ctx.font = '500 13px Arial';
       let titleDisplay = `TÍTULO: ${title} • [${category}]`;
       if (ctx.measureText(titleDisplay).width > 700) {
         while (titleDisplay.length > 5 && ctx.measureText(titleDisplay).width > 680) {
@@ -341,18 +432,18 @@
         }
         titleDisplay += '…';
       }
-      ctx.fillText(titleDisplay, 200, 78);
+      ctx.fillText(titleDisplay, 195, 74);
 
       // Marca RADARSTREAM (Derecha Arriba)
       ctx.fillStyle = neon;
       ctx.font = '900 22px Arial';
       ctx.textAlign = 'right';
-      ctx.fillText('RADARSTREAM', W - 60, 52);
+      ctx.fillText('RADARSTREAM', W - 60, 48);
       ctx.fillStyle = '#64748b';
       ctx.font = '700 11px Arial';
-      ctx.fillText('LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 70);
+      ctx.fillText('LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 66);
 
-      // 6. Preparar Escala y Coordenadas de la Gráfica
+      // 5. Preparar Escala y Coordenadas de la Gráfica
       if (processedPoints.length < 2) return;
 
       const firstT = processedPoints[0].t;
@@ -362,7 +453,7 @@
       // Pico máximo dinámico calibrado
       let maxV = -Infinity;
       processedPoints.forEach(p => { if (p.v > maxV) maxV = p.v; });
-      maxV = Math.max(100, maxV);
+      maxV = Math.max(100, Math.max(maxV, targetViewerCount));
       const stepRound = maxV > 50000 ? 10000 : (maxV > 20000 ? 5000 : (maxV > 5000 ? 1000 : 500));
       const yCeil = Math.ceil((maxV * 1.15) / stepRound) * stepRound;
 
@@ -375,7 +466,7 @@
       // ==========================================
       // CUADRÍCULA DE DIBUJANTE TÉCNICO (Mesa de Medición Real)
       // ==========================================
-      const squareSize = 45; // Cuadrados perfectos de 45px × 45px
+      const squareSize = 45; // Cuadrados de 45px × 45px
       
       // Cuadrícula Menor (Líneas milimétricas tenues)
       ctx.save();
@@ -411,7 +502,7 @@
         ctx.stroke();
       }
 
-      // Marco Técnico de Contorno de la Mesa de Dibujo
+      // Marco Técnico de Contorno de la Mesa de Dibujo (Sin cortes de pared)
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
       ctx.lineWidth = 1.5;
       ctx.strokeRect(MARGIN.left, MARGIN.top, graphW, graphH);
@@ -436,7 +527,7 @@
       // ==========================================
       // COTAS Y VALORES DE MEDICIÓN (Eje Y y Eje X)
       // ==========================================
-      // 7. Eje Y (Espectadores Reales Calibrados)
+      // 6. Eje Y (Espectadores Reales Calibrados)
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.font = '600 11px -apple-system, sans-serif';
@@ -448,7 +539,7 @@
         ctx.fillText(val.toLocaleString(), MARGIN.left - 8, yPos);
       }
 
-      // 8. Eje X (Tiempos de Medición Reales)
+      // 7. Eje X (Tiempos de Medición Reales)
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       const xStepCount = Math.min(8, Math.max(4, Math.floor(graphW / (squareSize * 3))));
@@ -459,7 +550,7 @@
         ctx.fillText(timeStr, xPos, MARGIN.bottom + 8);
       }
 
-      // 9. Coordenadas de los Puntos Reales (Sin recortes, 100% de la pantalla)
+      // 8. Coordenadas de los Puntos Reales (Sin recortes, 100% de la pantalla)
       const allCoords = processedPoints.map(p => ({
         x: getX(p.t),
         y: getY(p.v),
@@ -467,43 +558,63 @@
         t: p.t
       }));
 
-      const activeCoords = allCoords;
+      let activeCount = allCoords.length;
+      if (currentMode === 'replay') {
+        activeCount = Math.max(2, Math.floor(replayProgress * allCoords.length));
+      }
+      const activeCoords = allCoords.slice(0, activeCount);
       if (activeCoords.length < 2) return;
       const headPt = activeCoords[activeCoords.length - 1];
 
+      // Suavizado e interpolación de espectadores en vivo
+      if (currentMode === 'live' && targetViewerCount > 0) {
+        displayedViewerCount += (targetViewerCount - displayedViewerCount) * 0.12;
+        headPt.v = displayedViewerCount;
+        headPt.y = getY(displayedViewerCount);
+      }
+
       // ==========================================
-      // 10. ECUALIZADOR REAL DE AUDIENCIA (Barras Tipo Alfiler)
+      // 9. ECUALIZADOR REAL DE AUDIENCIA (Barras Tipo Alfiler Conectadas Como Títere)
       // ==========================================
       if (showEqualizerBars) {
         const numBars = 92; // Alta densidad de alfileres finos
         const barW = 2.0;   // Fino como un alfiler
         const stepX = graphW / numBars;
+        const now = performance.now() * 0.003;
 
+        let pIdx = 0;
         for (let b = 0; b < numBars; b++) {
           const bx = MARGIN.left + b * stepX + stepX / 2;
           if (bx > headPt.x) break;
 
           // Altura REAL calculada de la curva en la coordenada X exacta
-          let curveY = MARGIN.bottom;
-          for (let i = 0; i < activeCoords.length - 1; i++) {
-            const p0 = activeCoords[i];
-            const p1 = activeCoords[i + 1];
-            if (bx >= p0.x && bx <= p1.x) {
-              const span = (p1.x - p0.x) || 1;
-              const ratio = (bx - p0.x) / span;
-              curveY = p0.y + ratio * (p1.y - p0.y);
-              break;
-            }
+          while (pIdx < activeCoords.length - 2 && activeCoords[pIdx + 1].x < bx) {
+            pIdx++;
           }
-          if (bx >= activeCoords[activeCoords.length - 1].x) {
+          const p0 = activeCoords[pIdx];
+          const p1 = activeCoords[pIdx + 1];
+          let curveY = MARGIN.bottom;
+          if (p0 && p1) {
+            const span = (p1.x - p0.x) || 1;
+            const ratio = Math.max(0, Math.min(1, (bx - p0.x) / span));
+            curveY = p0.y + ratio * (p1.y - p0.y);
+          } else {
             curveY = headPt.y;
           }
 
-          const barH = Math.max(3, MARGIN.bottom - curveY - 1);
-          if (barH <= 3) continue;
+          // Animación de respiración armónica viva ("Efecto Títere")
+          // Las barras oscilan armónicamente conectadas a la curva neón
+          const w1 = Math.sin(now * 3.2 + b * 0.35) * 0.045;
+          const w2 = Math.cos(now * 1.9 - b * 0.22) * 0.035;
+          const puppetPulse = Math.min(1.0, Math.max(0.15, 0.94 + w1 + w2));
 
+          const maxBarH = Math.max(0, MARGIN.bottom - curveY);
+          const barH = Math.max(3, maxBarH * puppetPulse);
+          if (barH <= 3 && maxBarH <= 3) continue;
+
+          // Gradiente luminoso neón de la aguja
           const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
-          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.70)' : 'rgba(169, 112, 255, 0.70)');
+          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.75)' : 'rgba(169, 112, 255, 0.75)');
           barGrad.addColorStop(0.35, isKick ? 'rgba(83, 252, 24, 0.35)' : 'rgba(169, 112, 255, 0.35)');
           barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
@@ -513,15 +624,32 @@
           ctx.roundRect(bx - barW / 2, MARGIN.bottom - barH, barW, barH, [1, 1, 0, 0]);
           ctx.fill();
 
-          // Puntero de luz en la punta del alfiler
+          // Puntero de luz en la punta del alfiler (LED Phosphor)
           ctx.fillStyle = isKick ? '#bbf7d0' : '#f3e8ff';
-          ctx.fillRect(bx - barW / 2, MARGIN.bottom - barH, barW, 1.5);
+          ctx.fillRect(bx - barW / 2, MARGIN.bottom - barH, barW, 1.8);
+
+          // Hilo conector técnico tipo títere hacia la curva superior
+          if (MARGIN.bottom - barH > curveY + 1) {
+            ctx.strokeStyle = isKick ? 'rgba(83, 252, 24, 0.30)' : 'rgba(169, 112, 255, 0.30)';
+            ctx.lineWidth = 0.8;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(bx, MARGIN.bottom - barH);
+            ctx.lineTo(bx, curveY);
+            ctx.stroke();
+
+            // Pequeño nódulo de anclaje en la curva
+            ctx.fillStyle = neon;
+            ctx.beginPath();
+            ctx.arc(bx, curveY, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
           ctx.restore();
         }
       }
 
       // ==========================================
-      // 11. ÁREA DE RELLENO BAJO LA CURVA
+      // 10. ÁREA DE RELLENO BAJO LA CURVA
       // ==========================================
       const areaGrad = ctx.createLinearGradient(0, MARGIN.top, 0, MARGIN.bottom);
       areaGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.20)' : 'rgba(169, 112, 255, 0.20)');
@@ -545,7 +673,7 @@
       ctx.fill();
 
       // ==========================================
-      // 12. HILO DELGADITO NEÓN (Máxima Precisión 1-Viewer)
+      // 11. HILO DELGADITO NEÓN (Máxima Precisión 1-Viewer)
       // ==========================================
       ctx.save();
       ctx.strokeStyle = neon;
@@ -572,7 +700,7 @@
       ctx.restore();
 
       // ==========================================
-      // 13. PLAYHEAD PIN EN LA PUNTA DE LA GRÁFICA
+      // 12. PLAYHEAD PIN EN LA PUNTA DE LA GRÁFICA
       // ==========================================
       const hX = headPt.x;
       const hY = headPt.y;
@@ -620,13 +748,22 @@
     }
 
     // ==========================================
-    // CARGA Y PROCESAMIENTO DE DATOS
+    // CARGA Y PROCESAMIENTO DE DATOS EN TIEMPO REAL
     // ==========================================
     async function loadStreamerData(slug, platform) {
       try {
+        updateButtonTheme();
         const liveRes = await fetch(`/api/v1/streamers/${slug}/live?platform=${platform}`);
         if (!liveRes.ok) return;
         currentStreamerData = await liveRes.json();
+
+        if (currentStreamerData && currentStreamerData.current_viewers !== undefined) {
+          targetViewerCount = currentStreamerData.current_viewers;
+          if (displayedViewerCount === 0 && targetViewerCount > 0) {
+            displayedViewerCount = targetViewerCount;
+          }
+          lastSyncTime = Date.now();
+        }
 
         // Cargar foto de avatar real
         if (currentStreamerData.avatar_url && currentStreamerData.avatar_url !== currentAvatarUrl) {
@@ -671,16 +808,21 @@
           }
         }
 
-        // Usar todos los puntos reales sin aplastarlos a 120
         processedPoints = deduped;
 
-        // Asegurar que el último punto tenga exactamente los viewers actuales
-        if (processedPoints.length > 0 && currentStreamerData.current_viewers > 0) {
-          processedPoints[processedPoints.length - 1].v = currentStreamerData.current_viewers;
-          processedPoints[processedPoints.length - 1].t = Date.now();
+        // Asegurar que el último punto tenga exactamente los viewers actuales y la hora actual
+        if (processedPoints.length > 0) {
+          const lastPt = processedPoints[processedPoints.length - 1];
+          const now = Date.now();
+          if (now - lastPt.t > 15000) {
+            processedPoints.push({ t: now, v: currentStreamerData.current_viewers });
+          } else {
+            lastPt.v = currentStreamerData.current_viewers;
+            lastPt.t = now;
+          }
         }
 
-        document.getElementById('statusText').textContent = `Muestras activas: ${processedPoints.length} • Viendo: ${slug.toUpperCase()} (${platform.toUpperCase()}) con ${currentStreamerData.current_viewers.toLocaleString()} viewers`;
+        updateStatusText();
       } catch (err) {
         console.error('Error cargando streamer:', err);
       }
@@ -706,11 +848,13 @@
           opt.value = `${ch.platform}:${ch.slug}`;
           const liveTag = ch.is_live ? `🔴 [LIVE: ${ch.viewers?.toLocaleString() || 0}]` : '⚪ [OFFLINE]';
           opt.textContent = `${liveTag} ${ch.username} (${ch.platform.toUpperCase()})`;
-          if (ch.slug.toLowerCase() === currentSlug) opt.selected = true;
+          if (ch.slug.toLowerCase() === currentSlug && ch.platform.toLowerCase() === currentPlatform) {
+            opt.selected = true;
+          }
           select.appendChild(opt);
         });
 
-        if (sorted.length > 0 && sorted[0].is_live) {
+        if (!hasCustomParam && sorted.length > 0 && sorted[0].is_live) {
           currentSlug = sorted[0].slug;
           currentPlatform = sorted[0].platform;
           select.value = `${currentPlatform}:${currentSlug}`;
@@ -723,6 +867,12 @@
       const [plat, slug] = val.split(':');
       currentSlug = slug.toLowerCase();
       currentPlatform = plat.toLowerCase();
+      displayedViewerCount = 0;
+      currentSamples = [];
+      processedPoints = [];
+      if (currentMode === 'replay') {
+        setMode('live');
+      }
       loadStreamerData(currentSlug, currentPlatform);
     }
 
@@ -731,11 +881,19 @@
       loadStreamerData(currentSlug, currentPlatform);
     });
 
+    // Actualizador de latido cada 1 segundo (confirma visualmente que nunca se congela)
+    setInterval(() => {
+      if (currentMode === 'live') {
+        updateStatusText();
+      }
+    }, 1000);
+
+    // Polling de telemetría automática cada 3 segundos (sin requerir F5)
     setInterval(() => {
       if (currentMode === 'live') {
         loadStreamerData(currentSlug, currentPlatform);
       }
-    }, 10000);
+    }, 3000);
 
     requestAnimationFrame(draw);
   </script>
