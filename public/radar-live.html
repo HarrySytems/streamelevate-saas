@@ -176,12 +176,8 @@
         <option value="">Cargando canales...</option>
       </select>
 
-      <button id="btnLiveMode" class="btn active" onclick="setMode('live')">
+      <button id="btnLiveMode" class="btn active">
         🔴 Modo En Vivo (15s)
-      </button>
-
-      <button id="btnReplayMode" class="btn btn-replay" onclick="startReplay()">
-        ⚡ Simular Reproducción Ecualizador
       </button>
 
       <button id="btnBarsToggle" class="btn" onclick="toggleEqualizerBars()">
@@ -214,57 +210,22 @@
     let streamerAvatarImg = null;
     let currentAvatarUrl = '';
 
-    let currentMode = 'live'; // 'live' | 'replay'
     let showEqualizerBars = true;
-    let replayProgress = 1;
-    let replayAnimId = null;
 
     const canvas = document.getElementById('radarCanvas');
     const ctx = canvas.getContext('2d');
 
+    // Dimensiones técnicas calibradas (Aprovecha todo el ancho sin cortes)
     const MARGIN = {
-      left: 100,
-      right: 60,
-      top: 130,
-      bottom: 640
+      left: 85,
+      right: 45,
+      top: 110,
+      bottom: 650
     };
-
-    function setMode(mode) {
-      currentMode = mode;
-      document.getElementById('btnLiveMode').classList.toggle('active', mode === 'live');
-      document.getElementById('btnReplayMode').classList.toggle('active', mode === 'replay');
-      if (mode === 'live') {
-        if (replayAnimId) cancelAnimationFrame(replayAnimId);
-        replayProgress = 1;
-        document.getElementById('liveDot').style.background = currentPlatform === 'kick' ? '#53fc18' : '#a970ff';
-        document.getElementById('statusText').textContent = 'Modo En Vivo: Escuchando muestras cada 15s';
-      }
-    }
 
     function toggleEqualizerBars() {
       showEqualizerBars = !showEqualizerBars;
       document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
-    }
-
-    function startReplay() {
-      setMode('replay');
-      replayProgress = 0;
-      const durationMs = 12000;
-      const startTime = performance.now();
-
-      function step(now) {
-        if (currentMode !== 'replay') return;
-        const elapsed = now - startTime;
-        replayProgress = Math.min(1, elapsed / durationMs);
-        document.getElementById('statusText').textContent = `Simulando animación ecualizador: ${Math.round(replayProgress * 100)}%`;
-        
-        if (replayProgress < 1) {
-          replayAnimId = requestAnimationFrame(step);
-        } else {
-          document.getElementById('statusText').textContent = 'Simulación finalizada. Puedes repetir o volver a En Vivo.';
-        }
-      }
-      replayAnimId = requestAnimationFrame(step);
     }
 
     // ==========================================
@@ -286,15 +247,7 @@
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
 
-      // 2. Líneas de Cuadrícula Sutiles
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
-      ctx.lineWidth = 1;
-      for (let x = MARGIN.left; x <= W - MARGIN.right; x += 55) {
-        ctx.beginPath();
-        ctx.moveTo(x, MARGIN.top);
-        ctx.lineTo(x, MARGIN.bottom);
-        ctx.stroke();
-      }
+      // 2. Fondo Técnico Listo
 
       // 3. Marca de Agua Gigante (KICK o TWITCH)
       ctx.save();
@@ -406,12 +359,12 @@
       const lastT = processedPoints[processedPoints.length - 1].t;
       const timeSpan = Math.max(1000, lastT - firstT);
 
-      // Pico máximo dinámico
+      // Pico máximo dinámico calibrado
       let maxV = -Infinity;
       processedPoints.forEach(p => { if (p.v > maxV) maxV = p.v; });
       maxV = Math.max(100, maxV);
-      const stepRound = maxV > 50000 ? 10000 : (maxV > 20000 ? 5000 : 2000);
-      const yCeil = Math.ceil((maxV * 1.12) / stepRound) * stepRound;
+      const stepRound = maxV > 50000 ? 10000 : (maxV > 20000 ? 5000 : (maxV > 5000 ? 1000 : 500));
+      const yCeil = Math.ceil((maxV * 1.15) / stepRound) * stepRound;
 
       const graphW = (W - MARGIN.right) - MARGIN.left;
       const graphH = MARGIN.bottom - MARGIN.top;
@@ -419,37 +372,94 @@
       const getX = (t) => MARGIN.left + ((t - firstT) / timeSpan) * graphW;
       const getY = (v) => MARGIN.bottom - (Math.max(0, v) / yCeil) * graphH;
 
-      // 7. Eje Y con Líneas Guía Horizontales
+      // ==========================================
+      // CUADRÍCULA DE DIBUJANTE TÉCNICO (Mesa de Medición Real)
+      // ==========================================
+      const squareSize = 45; // Cuadrados perfectos de 45px × 45px
+      
+      // Cuadrícula Menor (Líneas milimétricas tenues)
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+      ctx.lineWidth = 1;
+      for (let x = MARGIN.left; x <= W - MARGIN.right; x += squareSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, MARGIN.top);
+        ctx.lineTo(x, MARGIN.bottom);
+        ctx.stroke();
+      }
+      for (let y = MARGIN.bottom; y >= MARGIN.top; y -= squareSize) {
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left, y);
+        ctx.lineTo(W - MARGIN.right, y);
+        ctx.stroke();
+      }
+
+      // Cuadrícula Mayor y Escalas de Medición (Cada 2 cuadrados)
+      const majorStep = squareSize * 2;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.lineWidth = 1.2;
+      for (let x = MARGIN.left; x <= W - MARGIN.right; x += majorStep) {
+        ctx.beginPath();
+        ctx.moveTo(x, MARGIN.top);
+        ctx.lineTo(x, MARGIN.bottom);
+        ctx.stroke();
+      }
+      for (let y = MARGIN.bottom; y >= MARGIN.top; y -= majorStep) {
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left, y);
+        ctx.lineTo(W - MARGIN.right, y);
+        ctx.stroke();
+      }
+
+      // Marco Técnico de Contorno de la Mesa de Dibujo
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(MARGIN.left, MARGIN.top, graphW, graphH);
+
+      // Marcas de Cota / Ticks de Dibujante en los Ejes
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.lineWidth = 1.5;
+      for (let x = MARGIN.left; x <= W - MARGIN.right; x += squareSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, MARGIN.bottom);
+        ctx.lineTo(x, MARGIN.bottom + 4);
+        ctx.stroke();
+      }
+      for (let y = MARGIN.bottom; y >= MARGIN.top; y -= squareSize) {
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left - 4, y);
+        ctx.lineTo(MARGIN.left, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // ==========================================
+      // COTAS Y VALORES DE MEDICIÓN (Eje Y y Eje X)
+      // ==========================================
+      // 7. Eje Y (Espectadores Reales Calibrados)
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.font = '600 12px Arial';
-      ctx.fillStyle = '#64748b';
-      const ySteps = 5;
-      for (let i = 0; i <= ySteps; i++) {
-        const val = Math.round((yCeil / ySteps) * i);
-        const yPos = MARGIN.bottom - (i / ySteps) * graphH;
-
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-        ctx.beginPath();
-        ctx.moveTo(MARGIN.left, yPos);
-        ctx.lineTo(W - MARGIN.right, yPos);
-        ctx.stroke();
-
-        ctx.fillText(val.toLocaleString(), MARGIN.left - 12, yPos);
+      ctx.font = '600 11px -apple-system, sans-serif';
+      ctx.fillStyle = '#94a3b8';
+      const yStepCount = Math.min(8, Math.max(4, Math.floor(graphH / (squareSize * 2))));
+      for (let i = 0; i <= yStepCount; i++) {
+        const val = Math.round((yCeil / yStepCount) * i);
+        const yPos = MARGIN.bottom - (i / yStepCount) * graphH;
+        ctx.fillText(val.toLocaleString(), MARGIN.left - 8, yPos);
       }
 
-      // 8. Eje X (Horarios)
+      // 8. Eje X (Tiempos de Medición Reales)
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      const xSteps = 6;
-      for (let i = 0; i <= xSteps; i++) {
-        const tVal = firstT + (timeSpan / xSteps) * i;
-        const xPos = MARGIN.left + (i / xSteps) * graphW;
+      const xStepCount = Math.min(8, Math.max(4, Math.floor(graphW / (squareSize * 3))));
+      for (let i = 0; i <= xStepCount; i++) {
+        const tVal = firstT + (timeSpan / xStepCount) * i;
+        const xPos = MARGIN.left + (i / xStepCount) * graphW;
         const timeStr = new Date(tVal).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-        ctx.fillText(timeStr, xPos, MARGIN.bottom + 12);
+        ctx.fillText(timeStr, xPos, MARGIN.bottom + 8);
       }
 
-      // 9. Calcular puntos activos según modo
+      // 9. Coordenadas de los Puntos Reales (Sin recortes, 100% de la pantalla)
       const allCoords = processedPoints.map(p => ({
         x: getX(p.t),
         y: getY(p.v),
@@ -457,54 +467,65 @@
         t: p.t
       }));
 
-      let activeCount = allCoords.length;
-      if (currentMode === 'replay') {
-        activeCount = Math.max(2, Math.floor(replayProgress * allCoords.length));
-      }
-      const activeCoords = allCoords.slice(0, activeCount);
+      const activeCoords = allCoords;
       if (activeCoords.length < 2) return;
-
       const headPt = activeCoords[activeCoords.length - 1];
 
-      // 10. Ecualizador Ultra-Fino de Espectro (Alfileres Micro-LED o Láser)
-      // 10. Barras de Espectro Neón Finitas (Basadas en Datos REALES del Stream)
+      // ==========================================
+      // 10. ECUALIZADOR REAL DE AUDIENCIA (Barras Tipo Alfiler)
+      // ==========================================
       if (showEqualizerBars) {
-        const numBars = 85; // Finitas, más líneas (antes eran 32)
-        const barW = 2.2;   // Finitas como un alfiler
-        const graphSpanX = headPt.x - MARGIN.left;
-        const stepX = graphSpanX / numBars;
-        const now = performance.now() * 0.003;
+        const numBars = 92; // Alta densidad de alfileres finos
+        const barW = 2.0;   // Fino como un alfiler
+        const stepX = graphW / numBars;
 
         for (let b = 0; b < numBars; b++) {
-          const bx = MARGIN.left + b * stepX + (stepX - barW) / 2;
-          if (bx + barW > headPt.x) break;
+          const bx = MARGIN.left + b * stepX + stepX / 2;
+          if (bx > headPt.x) break;
 
-          const norm = b / numBars;
-          const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
-          const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
-          const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
+          // Altura REAL calculada de la curva en la coordenada X exacta
+          let curveY = MARGIN.bottom;
+          for (let i = 0; i < activeCoords.length - 1; i++) {
+            const p0 = activeCoords[i];
+            const p1 = activeCoords[i + 1];
+            if (bx >= p0.x && bx <= p1.x) {
+              const span = (p1.x - p0.x) || 1;
+              const ratio = (bx - p0.x) / span;
+              curveY = p0.y + ratio * (p1.y - p0.y);
+              break;
+            }
+          }
+          if (bx >= activeCoords[activeCoords.length - 1].x) {
+            curveY = headPt.y;
+          }
 
-          // Altura 100% REAL de los viewers en ese punto de la curva
-          const pulse = Math.sin(now + b * 0.45) * 0.12 + 0.88;
-          const barH = Math.max(4, Math.min(maxAvailable * 0.55, (maxAvailable * 0.38 + 4) * pulse));
+          const barH = Math.max(3, MARGIN.bottom - curveY - 1);
+          if (barH <= 3) continue;
 
           const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
-          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.65)' : 'rgba(169, 112, 255, 0.65)');
+          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.70)' : 'rgba(169, 112, 255, 0.70)');
+          barGrad.addColorStop(0.35, isKick ? 'rgba(83, 252, 24, 0.35)' : 'rgba(169, 112, 255, 0.35)');
           barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
           ctx.save();
           ctx.fillStyle = barGrad;
           ctx.beginPath();
-          ctx.roundRect(bx, MARGIN.bottom - barH, barW, barH, [1.5, 1.5, 0, 0]);
+          ctx.roundRect(bx - barW / 2, MARGIN.bottom - barH, barW, barH, [1, 1, 0, 0]);
           ctx.fill();
+
+          // Puntero de luz en la punta del alfiler
+          ctx.fillStyle = isKick ? '#bbf7d0' : '#f3e8ff';
+          ctx.fillRect(bx - barW / 2, MARGIN.bottom - barH, barW, 1.5);
           ctx.restore();
         }
       }
 
-      // 11. Área con Gradiente Suave (Bézier Cuadrática)
+      // ==========================================
+      // 11. ÁREA DE RELLENO BAJO LA CURVA
+      // ==========================================
       const areaGrad = ctx.createLinearGradient(0, MARGIN.top, 0, MARGIN.bottom);
-      areaGrad.addColorStop(0, areaColor);
-      areaGrad.addColorStop(0.7, isKick ? 'rgba(83, 252, 24, 0.06)' : 'rgba(169, 112, 255, 0.06)');
+      areaGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.20)' : 'rgba(169, 112, 255, 0.20)');
+      areaGrad.addColorStop(0.65, isKick ? 'rgba(83, 252, 24, 0.04)' : 'rgba(169, 112, 255, 0.04)');
       areaGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.fillStyle = areaGrad;
@@ -523,12 +544,14 @@
       ctx.closePath();
       ctx.fill();
 
-      // 12. Línea Neón Resplandeciente (Bézier Cuadrática - Cero Zigzag)
+      // ==========================================
+      // 12. HILO DELGADITO NEÓN (Máxima Precisión 1-Viewer)
+      // ==========================================
       ctx.save();
       ctx.strokeStyle = neon;
-      ctx.lineWidth = 3.6;
+      ctx.lineWidth = 1.6; // Hilo fino de precisión
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 18;
+      ctx.shadowBlur = 4; // Resplandor limpio sin manchar
       ctx.beginPath();
       ctx.moveTo(activeCoords[0].x, activeCoords[0].y);
       for (let i = 0; i < activeCoords.length - 1; i++) {
@@ -539,25 +562,18 @@
         ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
       }
       ctx.lineTo(headPt.x, headPt.y);
+      ctx.stroke();
+
+      // Núcleo blanco del hilo
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 0.8;
+      ctx.shadowBlur = 0;
       ctx.stroke();
       ctx.restore();
 
-      // Trazo interior blanco nítido
-      ctx.beginPath();
-      ctx.moveTo(activeCoords[0].x, activeCoords[0].y);
-      for (let i = 0; i < activeCoords.length - 1; i++) {
-        const p0 = activeCoords[i];
-        const p1 = activeCoords[i + 1];
-        const midX = (p0.x + p1.x) / 2;
-        const midY = (p0.y + p1.y) / 2;
-        ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
-      }
-      ctx.lineTo(headPt.x, headPt.y);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-
-      // 13. Aguja / Playhead en la Punta
+      // ==========================================
+      // 13. PLAYHEAD PIN EN LA PUNTA DE LA GRÁFICA
+      // ==========================================
       const hX = headPt.x;
       const hY = headPt.y;
 
@@ -565,24 +581,24 @@
       ctx.strokeStyle = neon;
       ctx.lineWidth = 2;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 15;
+      ctx.shadowBlur = 10;
       ctx.beginPath();
-      ctx.arc(hX, hY, 8, 0, Math.PI * 2);
+      ctx.arc(hX, hY, 6, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
 
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(hX, hY, 4, 0, Math.PI * 2);
+      ctx.arc(hX, hY, 3, 0, Math.PI * 2);
       ctx.fill();
 
-      // Badge flotante sobre la aguja
+      // Badge Flotante de Viewers Reales
       const badgeText = `${Math.round(headPt.v).toLocaleString()} VIEWERS`;
-      ctx.font = '900 13px Arial';
+      ctx.font = '900 12px Arial';
       const bW = ctx.measureText(badgeText).width + 16;
       const bH = 24;
       const bX = Math.min(W - MARGIN.right - bW, Math.max(MARGIN.left, hX - bW / 2));
-      const bY = Math.max(MARGIN.top - 10, hY - 34);
+      const bY = Math.max(MARGIN.top - 10, hY - 32);
 
       ctx.save();
       ctx.fillStyle = '#0f172a';
@@ -632,47 +648,31 @@
           }
         }
 
-        if (currentSamples.length === 0) {
+        if (!currentSamples || currentSamples.length === 0) {
           const now = Date.now();
+          const curV = currentStreamerData.current_viewers || 0;
           currentSamples = [
-            { timestamp: (currentStreamerData.started_at || now - 60000), viewers: Math.round(currentStreamerData.current_viewers * 0.8) },
-            { timestamp: now, viewers: currentStreamerData.current_viewers }
+            { timestamp: now - 30000, viewers: Math.max(0, curV - 10) },
+            { timestamp: now - 15000, viewers: Math.max(0, curV - 4) },
+            { timestamp: now, viewers: curV }
           ];
         }
 
-        // Si el stream empezó antes del primer registro en BD (ej: reinicio de servidor):
-        if (currentStreamerData.started_at && currentSamples.length > 0) {
-          const startT = Number(currentStreamerData.started_at);
-          const firstT = Number(currentSamples[0].timestamp ?? currentSamples[0].t);
-          if (firstT - startT > 180000) {
-            const firstV = Number(currentSamples[0].viewers ?? currentSamples[0].v);
-            const ramp = [
-              { timestamp: startT, viewers: 0 },
-              { timestamp: startT + (firstT - startT) * 0.25, viewers: Math.round(firstV * 0.45) },
-              { timestamp: startT + (firstT - startT) * 0.55, viewers: Math.round(firstV * 0.72) },
-              { timestamp: startT + (firstT - startT) * 0.85, viewers: Math.round(firstV * 0.90) }
-            ];
-            currentSamples = [...ramp, ...currentSamples];
-          }
-        }
-
-        // 1. Filtrar puntos adyacentes idénticos (evita escalones/oscilaciones artificiales)
+        // 1. Conservar TODAS las muestras reales registradas (fidelidad 1-viewer)
         const deduped = [];
         for (let i = 0; i < currentSamples.length; i++) {
-          const cur = { t: Number(currentSamples[i].timestamp ?? currentSamples[i].t), v: Number(currentSamples[i].viewers ?? currentSamples[i].v) };
+          const cur = { 
+            t: Number(currentSamples[i].timestamp ?? currentSamples[i].t), 
+            v: Number(currentSamples[i].viewers ?? currentSamples[i].v) 
+          };
           const last = deduped[deduped.length - 1];
-          if (!last || last.v !== cur.v || (cur.t - last.t > 120000) || i === currentSamples.length - 1) {
+          if (!last || last.t !== cur.t) {
             deduped.push(cur);
           }
         }
 
-        // 2. Submuestrear a un número óptimo de puntos para Bézier suave
-        const targetCount = Math.min(120, Math.max(20, deduped.length));
-        processedPoints = [];
-        for (let i = 0; i < targetCount; i++) {
-          const idx = Math.min(deduped.length - 1, Math.floor((i / (targetCount - 1)) * (deduped.length - 1)));
-          processedPoints.push(deduped[idx]);
-        }
+        // Usar todos los puntos reales sin aplastarlos a 120
+        processedPoints = deduped;
 
         // Asegurar que el último punto tenga exactamente los viewers actuales
         if (processedPoints.length > 0 && currentStreamerData.current_viewers > 0) {
@@ -680,10 +680,7 @@
           processedPoints[processedPoints.length - 1].t = Date.now();
         }
 
-        if (currentMode === 'live') {
-          replayProgress = 1;
-          document.getElementById('statusText').textContent = `Muestras activas: ${currentSamples.length} • Viendo: ${slug.toUpperCase()} (${platform.toUpperCase()}) con ${currentStreamerData.current_viewers.toLocaleString()} viewers`;
-        }
+        document.getElementById('statusText').textContent = `Muestras activas: ${processedPoints.length} • Viendo: ${slug.toUpperCase()} (${platform.toUpperCase()}) con ${currentStreamerData.current_viewers.toLocaleString()} viewers`;
       } catch (err) {
         console.error('Error cargando streamer:', err);
       }
