@@ -184,8 +184,8 @@
         ⚡ Simular Reproducción Ecualizador
       </button>
 
-      <button id="btnBarsToggle" class="btn" onclick="toggleEqualizerBars()">
-        🎛️ Barras de Espectro: ON
+      <button id="btnBarsToggle" class="btn" onclick="cycleEqualizerMode()">
+        🎛️ Estilo: Alfileres Micro-LED (Matriz)
       </button>
 
       <a href="/live-counter.html" class="btn">
@@ -215,7 +215,7 @@
     let currentAvatarUrl = '';
 
     let currentMode = 'live'; // 'live' | 'replay'
-    let showEqualizerBars = true;
+    let equalizerMode = 'micro_dots'; // 'micro_dots' | 'micro_needles' | 'bars' | 'off'
     let replayProgress = 1;
     let replayAnimId = null;
 
@@ -241,9 +241,20 @@
       }
     }
 
-    function toggleEqualizerBars() {
-      showEqualizerBars = !showEqualizerBars;
-      document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
+    function cycleEqualizerMode() {
+      if (equalizerMode === 'micro_dots') {
+        equalizerMode = 'micro_needles';
+        document.getElementById('btnBarsToggle').textContent = '🎛️ Estilo: Alfileres Láser Finos';
+      } else if (equalizerMode === 'micro_needles') {
+        equalizerMode = 'bars';
+        document.getElementById('btnBarsToggle').textContent = '🎛️ Estilo: Barras 32 Bandas';
+      } else if (equalizerMode === 'bars') {
+        equalizerMode = 'off';
+        document.getElementById('btnBarsToggle').textContent = '🎛️ Espectro: APAGADO';
+      } else {
+        equalizerMode = 'micro_dots';
+        document.getElementById('btnBarsToggle').textContent = '🎛️ Estilo: Alfileres Micro-LED (Matriz)';
+      }
     }
 
     function startReplay() {
@@ -466,36 +477,92 @@
 
       const headPt = activeCoords[activeCoords.length - 1];
 
-      // 10. Barras de Espectro Neón (Espaciadas y elegantes)
-      if (showEqualizerBars) {
-        const numBars = 32;
-        const barW = 8;
-        const graphSpanX = headPt.x - MARGIN.left;
-        const stepX = graphSpanX / numBars;
+      // 10. Ecualizador Ultra-Fino de Espectro (Alfileres Micro-LED o Láser)
+      if (equalizerMode !== 'off') {
         const now = performance.now() * 0.003;
 
-        for (let b = 0; b < numBars; b++) {
-          const bx = MARGIN.left + b * stepX + (stepX - barW) / 2;
-          if (bx + barW > headPt.x) break;
+        if (equalizerMode === 'bars') {
+          // Modo 1: Barras Clásicas de 32 bandas
+          const numBars = 32;
+          const barW = 8;
+          const graphSpanX = headPt.x - MARGIN.left;
+          const stepX = graphSpanX / numBars;
 
-          const norm = b / numBars;
-          const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
-          const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
-          const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
+          for (let b = 0; b < numBars; b++) {
+            const bx = MARGIN.left + b * stepX + (stepX - barW) / 2;
+            if (bx + barW > headPt.x) break;
 
-          const pulse = Math.sin(now + b * 0.45) * 0.35 + 0.65;
-          const barH = Math.max(6, Math.min(maxAvailable * 0.55, maxAvailable * 0.3 + pulse * 22));
+            const norm = b / numBars;
+            const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
+            const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
+            const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
 
-          const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
-          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
-          barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            const pulse = Math.sin(now + b * 0.45) * 0.35 + 0.65;
+            const barH = Math.max(6, Math.min(maxAvailable * 0.55, maxAvailable * 0.3 + pulse * 22));
 
-          ctx.save();
-          ctx.fillStyle = barGrad;
-          ctx.beginPath();
-          ctx.roundRect(bx, MARGIN.bottom - barH, barW, barH, [4, 4, 0, 0]);
-          ctx.fill();
-          ctx.restore();
+            const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
+            barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
+            barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+            ctx.save();
+            ctx.fillStyle = barGrad;
+            ctx.beginPath();
+            ctx.roundRect(bx, MARGIN.bottom - barH, barW, barH, [4, 4, 0, 0]);
+            ctx.fill();
+            ctx.restore();
+          }
+        } else {
+          // Modo 2 y 3: ALFILERES ULTRA-FINOS (Matriz Micro-LED o Láser continuo)
+          const isDotted = (equalizerMode === 'micro_dots');
+          const stepX = 5.5; // Espaciado ultra-fino de alta resolución (~180 alfileres)
+          const barW = 1.4;  // Grosor de alfiler hiper-delgado y detallista
+          const graphSpanX = headPt.x - MARGIN.left;
+          const numBars = Math.floor(graphSpanX / stepX);
+
+          for (let b = 0; b < numBars; b++) {
+            const bx = MARGIN.left + b * stepX;
+            if (bx > headPt.x) break;
+
+            const norm = b / numBars;
+            const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
+            const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
+            const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
+
+            // Simulación de espectro armónico de audio (altas y medias frecuencias)
+            const wave1 = Math.sin(now * 1.6 + b * 0.26) * 0.5 + 0.5;
+            const wave2 = Math.cos(now * 2.4 - b * 0.42) * 0.3 + 0.3;
+            const wave3 = Math.sin(now * 0.9 + b * 0.09) * 0.2 + 0.2;
+            const audioFactor = 0.25 + (wave1 * 0.45 + wave2 * 0.2 + wave3 * 0.1);
+
+            const barH = Math.max(6, Math.min(maxAvailable * 0.92, maxAvailable * audioFactor));
+            const topY = MARGIN.bottom - barH;
+
+            // Gradiente luminoso neón
+            const barGrad = ctx.createLinearGradient(0, topY, 0, MARGIN.bottom);
+            barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.9)' : 'rgba(169, 112, 255, 0.9)');
+            barGrad.addColorStop(0.3, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
+            barGrad.addColorStop(0.8, isKick ? 'rgba(83, 252, 24, 0.12)' : 'rgba(169, 112, 255, 0.12)');
+            barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+            ctx.save();
+            ctx.strokeStyle = barGrad;
+            ctx.lineWidth = barW;
+            if (isDotted) {
+              ctx.setLineDash([3, 2]); // Micro-cubos LED punteados estilo matriz
+            } else {
+              ctx.setLineDash([]);
+            }
+            ctx.beginPath();
+            ctx.moveTo(bx, MARGIN.bottom);
+            ctx.lineTo(bx, topY);
+            ctx.stroke();
+
+            // Puntero / LED de pico brillante en la punta del alfiler
+            ctx.setLineDash([]);
+            ctx.fillStyle = isKick ? '#dcfce7' : '#faf5ff';
+            ctx.fillRect(bx - barW / 2, topY - 1.5, barW, 2);
+            ctx.restore();
+          }
         }
       }
 
