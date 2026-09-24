@@ -73,6 +73,28 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_audience_stream ON audience_samples(stream_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_chat_stream ON chat_messages(stream_id, timestamp);
     CREATE INDEX IF NOT EXISTS idx_chat_sender ON chat_messages(stream_id, sender_id);
+
+    CREATE TABLE IF NOT EXISTS capture_gaps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      stream_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      reason TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS report_jobs (
+      session_id TEXT NOT NULL,
+      report_version INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL,
+      lease_until INTEGER,
+      last_error TEXT,
+      PRIMARY KEY (session_id, report_version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_capture_gaps_stream ON capture_gaps(stream_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_report_jobs_status ON report_jobs(status, next_attempt_at);
   `);
 
   // Migration check: ensure composite PRIMARY KEY (platform, slug)
@@ -226,6 +248,22 @@ const stmts = {
 
   getRecentStreams: db.prepare(`
     SELECT * FROM streams WHERE slug = ? ORDER BY started_at DESC LIMIT 10
+  `),
+
+  insertCaptureGap: db.prepare(`
+    INSERT INTO capture_gaps (stream_id, started_at, ended_at, reason)
+    VALUES (@stream_id, @started_at, @ended_at, @reason)
+  `),
+
+  getGaps: db.prepare(`
+    SELECT started_at, ended_at, reason FROM capture_gaps
+    WHERE stream_id = ? ORDER BY started_at ASC
+  `),
+
+  getPendingJobs: db.prepare(`
+    SELECT session_id, report_version, attempts FROM report_jobs
+    WHERE status = 'pending' AND next_attempt_at <= ?
+    ORDER BY next_attempt_at ASC LIMIT 10
   `)
 };
 
@@ -318,6 +356,7 @@ module.exports = {
     const stream = db.prepare(`SELECT * FROM streams WHERE id = ?`).get(streamId);
     if (!stream) return null;
     const allSamples = stmts.getAudienceSamples.all(streamId);
+    const gaps = stmts.getGaps.all(streamId);
     const chat = stmts.getChatStats.get(streamId);
     const topChatters = stmts.getTopChatters.all(streamId);
     const chatTimeline = stmts.getChatPerMinute.all(streamId);
@@ -328,10 +367,65 @@ module.exports = {
     return {
       stream,
       samples: chartSamples,
+      gaps,
       total_samples_recorded: allSamples.length,
       chat,
       topChatters,
       chatTimeline
     };
+  },
+
+  /**
+   * getSessionChart — siempre lee de SQLite (no de RAM).
+   * Devuelve muestras, huecos, total y rango temporal exacto de la sesión.
+   */
+  getSessionChart(sessionId, targetPoints = 1500) {
+    const samples = db.prepare(`
+      SELECT timestamp, viewers
+      FROM audience_samples
+      WHERE stream_id = ?
+      ORDER BY timestamp ASC, id ASC
+    `).all(sessionId);
+
+    const gaps = stmts.getGaps.all(sessionId);
+
+    return {
+      samples: this.downsampleSamplesForChart(samples, targetPoints),
+      gaps,
+      totalSamples: samples.length,
+      firstObservedAt: samples[0]?.timestamp ?? null,
+      lastObservedAt: samples[samples.length - 1]?.timestamp ?? null
+    };
+  },
+
+  /**
+   * Registra un hueco de captura (perdida de conectividad, error HTTP, etc.)
+   */
+  recordCaptureGap(streamId, startedAt, endedAt, reason = 'unknown') {
+    try {
+      stmts.insertCaptureGap.run({
+        stream_id: streamId,
+        started_at: startedAt,
+        ended_at: endedAt,
+        reason
+      });
+    } catch (e) {
+      console.warn('[DB] Error registrando hueco de captura:', e.message);
+    }
+  },
+
+  /**
+   * Cierra la sesión y encola el trabajo de generación de reporte en una sola transacción atómica.
+   */
+  closeAndEnqueue(sessionId, closeFn) {
+    const tx = db.transaction(() => {
+      closeFn();
+      db.prepare(`
+        INSERT INTO report_jobs (session_id, report_version, next_attempt_at)
+        VALUES (?, 1, ?)
+        ON CONFLICT(session_id, report_version) DO NOTHING
+      `).run(sessionId, Date.now());
+    });
+    tx();
   }
 };

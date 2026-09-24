@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const Pusher = require('pusher-js');
-const { db, stmts, recordAudience, recordChat, seedChannels, downsampleSamplesForChart } = require('./db');
+const { db, stmts, recordAudience, recordChat, seedChannels, downsampleSamplesForChart, recordCaptureGap, closeAndEnqueue } = require('./db');
+const { resolveSession, calculateObservedStats } = require('./session-state');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -391,34 +392,31 @@ function closeStreamSession(active) {
   try {
     const stats = stmts.getChatStats.get(active.id);
     const samples = stmts.getAudienceSamples.all(active.id);
+    const gaps = stmts.getGaps.all(active.id);
 
-    let weightedSum = 0;
-    let totalObservedSeconds = 0;
-    for (let i = 0; i < samples.length - 1; i++) {
-      const dt = (samples[i + 1].timestamp - samples[i].timestamp) / 1000;
-      // Tratar huecos conocidos: si dt > 120s (más de 2 min sin datos), no conectar en el vacío
-      if (dt > 120) continue;
-      weightedSum += ((samples[i].viewers + samples[i + 1].viewers) / 2) * dt;
-      totalObservedSeconds += dt;
-    }
+    // Usar calculateObservedStats desde session-state (función de producción real)
+    const { averageViewers, observedSeconds } = calculateObservedStats(samples, gaps);
 
     // El final de la emisión se sella con la última observación real en directo
     const finalEndedAt = active.lastLiveAt || active.offlineSince || Date.now();
     const totalDurationSeconds = Math.max(1, (finalEndedAt - active.startedAt) / 1000);
-    const coverageRatio = Math.min(1.0, totalObservedSeconds / totalDurationSeconds);
+    const coverageRatio = Math.min(1.0, observedSeconds / totalDurationSeconds);
 
-    // Calcular media sobre cobertura válida
-    const avgViewers = totalObservedSeconds > 0 ? (weightedSum / totalObservedSeconds) : (active.viewers || 0);
+    // null significa cobertura insuficiente — usar viewers actuales como estimación mínima
+    const avgViewers = averageViewers !== null ? averageViewers : (active.viewers || 0);
 
-    stmts.closeStream.run({
-      id: active.id,
-      ended_at: finalEndedAt,
-      avg_viewers: Math.round(avgViewers),
-      coverage_ratio: Number(coverageRatio.toFixed(4)),
-      last_live_at: active.lastLiveAt || finalEndedAt,
-      first_offline_at: active.firstOfflineAt || active.offlineSince || finalEndedAt,
-      total_messages: stats?.total_messages || 0,
-      unique_chatters: stats?.unique_chatters || 0
+    // Cerrar sesión + encolar reporte en transacción atómica
+    closeAndEnqueue(active.id, () => {
+      stmts.closeStream.run({
+        id: active.id,
+        ended_at: finalEndedAt,
+        avg_viewers: Math.round(avgViewers),
+        coverage_ratio: Number(coverageRatio.toFixed(4)),
+        last_live_at: active.lastLiveAt || finalEndedAt,
+        first_offline_at: active.firstOfflineAt || active.offlineSince || finalEndedAt,
+        total_messages: stats?.total_messages || 0,
+        unique_chatters: stats?.unique_chatters || 0
+      });
     });
 
     if (active.platform === 'kick' && active.chatroomId) {
