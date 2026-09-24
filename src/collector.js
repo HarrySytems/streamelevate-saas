@@ -440,7 +440,7 @@ async function pollKickBatch(channels) {
         const lastSample = active.recentSamples[active.recentSamples.length - 1];
         if (!lastSample || lastSample.viewers !== viewers || (now - lastSample.timestamp >= 20000)) {
           active.recentSamples.push({ timestamp: now, viewers });
-          if (active.recentSamples.length > 1200) active.recentSamples.shift();
+          if (active.recentSamples.length > 25000) active.recentSamples.shift(); // Soporta 24h+ de directo continuo sin perder el inicio
           recordAudience(active.id, 'kick', slug, now, viewers, category, title);
         }
       } else {
@@ -605,7 +605,7 @@ async function pollTwitchBatch(channels) {
         const lastSample = active.recentSamples[active.recentSamples.length - 1];
         if (!lastSample || lastSample.viewers !== viewers || (now - lastSample.timestamp >= 20000)) {
           active.recentSamples.push({ timestamp: now, viewers });
-          if (active.recentSamples.length > 1200) active.recentSamples.shift();
+          if (active.recentSamples.length > 25000) active.recentSamples.shift(); // Soporta 24h+ de directo continuo sin perder el inicio
           recordAudience(active.id, 'twitch', slug, now, viewers, category, title);
         }
       } else {

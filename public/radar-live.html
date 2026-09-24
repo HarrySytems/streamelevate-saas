@@ -788,12 +788,9 @@
         if (!currentSamples || currentSamples.length === 0) {
           const now = Date.now();
           const curV = currentStreamerData.current_viewers || 0;
-          let startT = currentStreamerData.started_at;
-          if (typeof startT === 'string') startT = new Date(startT).getTime();
-          if (!startT || isNaN(startT) || startT >= now) startT = now - 60000;
-          // Datos 100% reales planos si aún no hay historial previo acumulado (Corrección Codex #4)
+          // Inicializar solo la ventana de conexión actual sin simular horas previas no medidas
           currentSamples = [
-            { timestamp: Math.min(startT, now - 5000), viewers: curV },
+            { timestamp: now - 10000, viewers: curV },
             { timestamp: now, viewers: curV }
           ];
         }
