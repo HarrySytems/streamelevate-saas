@@ -105,6 +105,7 @@ io.on('connection', (socket) => {
 
 // --- INICIAR COLECTOR 24/7 ---
 const { startCollector } = require('./src/collector');
+const { startReportWorker } = require('./src/report-worker');
 
 const PORT = process.env.PORT || 3050;
 server.listen(PORT, () => {
@@ -113,4 +114,5 @@ server.listen(PORT, () => {
     console.log(`[API TELEMETRÍA] Endpoint: http://localhost:${PORT}/api/v1/health`);
     console.log(`====================================================`);
     startCollector();
+    startReportWorker();
 });

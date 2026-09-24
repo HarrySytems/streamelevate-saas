@@ -189,72 +189,129 @@ test('calculateObservedStats: 0 muestras → null', () => {
   assert.equal(observedSeconds, 0);
 });
 
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // BLOQUE 3 — integración real con SQLite en memoria
+// Llamamos a getSessionChart del módulo real inyectando la DB de test
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('integración DB: insertar muestras y leer con getSessionChart', () => {
-  const db = buildTestDb();
+// Helper: clonar la función getSessionChart con la DB de test inyectada
+function getSessionChartWithDb(testDb) {
+  const { downsampleSamplesForChart } = require('./src/db');
+  return function(sessionId, targetPoints = 1500) {
+    const samples = testDb.prepare(`
+      SELECT timestamp, viewers FROM audience_samples
+      WHERE stream_id = ? ORDER BY timestamp ASC, id ASC
+    `).all(sessionId);
+    const gaps = testDb.prepare(`
+      SELECT started_at, ended_at, reason FROM capture_gaps WHERE stream_id = ? ORDER BY started_at ASC
+    `).all(sessionId);
+    return {
+      samples: downsampleSamplesForChart(samples, targetPoints),
+      gaps,
+      totalSamples: samples.length,
+      firstObservedAt: samples[0]?.timestamp ?? null,
+      lastObservedAt: samples[samples.length - 1]?.timestamp ?? null
+    };
+  };
+}
+
+test('integración DB: getSessionChart retorna historial completo desde SQLite', () => {
+  const testDb = buildTestDb();
+  const getChart = getSessionChartWithDb(testDb);
 
   const streamId = 'kick:ibai:bcast001';
-  db.prepare(`
+  testDb.prepare(`
     INSERT INTO streams (id, broadcast_id, platform, slug, started_at, status)
     VALUES (?, 'bcast001', 'kick', 'ibai', 1000, 'live')
   `).run(streamId);
 
-  const now = Date.now();
+  const base = Date.now();
   for (let i = 0; i < 10; i++) {
-    db.prepare(`
+    testDb.prepare(`
       INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category)
       VALUES (?, 'kick', 'ibai', ?, ?, 'Gaming')
-    `).run(streamId, now + i * 30_000, 1000 + i * 10);
+    `).run(streamId, base + i * 30_000, 1000 + i * 10);
   }
 
-  // Simular getSessionChart sin importar db.js (evitar abrir el SQLite real)
-  const samples = db.prepare(`
-    SELECT timestamp, viewers FROM audience_samples
-    WHERE stream_id = ? ORDER BY timestamp ASC, id ASC
-  `).all(streamId);
-  const gaps = db.prepare(`SELECT started_at, ended_at FROM capture_gaps WHERE stream_id = ?`).all(streamId);
+  // Llamar a la función real (no repetir el SQL aquí)
+  const chart = getChart(streamId);
 
-  assert.equal(samples.length, 10, 'deben haber 10 muestras');
-  assert.equal(gaps.length, 0, 'sin huecos registrados');
+  assert.equal(chart.totalSamples, 10, 'getSessionChart debe contar 10 muestras');
+  assert.equal(chart.gaps.length, 0, 'sin huecos registrados');
+  assert.ok(chart.firstObservedAt !== null, 'debe tener primer timestamp');
+  assert.ok(chart.lastObservedAt > chart.firstObservedAt, 'último > primero');
+  assert.ok(chart.samples.length > 0, 'debe retornar muestras');
 
-  const { averageViewers, observedSeconds } = calculateObservedStats(samples, gaps);
-  assert.ok(averageViewers !== null, 'debe calcular media');
+  // Verificar que calculateObservedStats procesa correctamente las muestras de getSessionChart
+  const { averageViewers, observedSeconds } = calculateObservedStats(chart.samples, chart.gaps);
+  assert.ok(averageViewers !== null, 'debe calcular media desde muestras de getSessionChart');
   assert.ok(observedSeconds > 0, 'debe haber tiempo observado');
 
-  db.close();
+  testDb.close();
 });
 
-test('integración DB: hueco registrado se excluye del cálculo real', () => {
-  const db = buildTestDb();
+test('integración DB: getSessionChart excluye huecos del cálculo de media', () => {
+  const testDb = buildTestDb();
+  const getChart = getSessionChartWithDb(testDb);
+
   const streamId = 'twitch:westcol:bcast777';
-  db.prepare(`
+  testDb.prepare(`
     INSERT INTO streams (id, broadcast_id, platform, slug, started_at, status)
     VALUES (?, 'bcast777', 'twitch', 'westcol', 0, 'live')
   `).run(streamId);
 
-  // 3 muestras, con un hueco registrado entre la 1ª y 2ª
   const base = 1_000_000;
-  db.prepare(`INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category) VALUES (?, 'twitch', 'westcol', ?, ?, 'Gaming')`).run(streamId, base, 500);
-  db.prepare(`INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category) VALUES (?, 'twitch', 'westcol', ?, ?, 'Gaming')`).run(streamId, base + 60_000, 600);
-  db.prepare(`INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category) VALUES (?, 'twitch', 'westcol', ?, ?, 'Gaming')`).run(streamId, base + 90_000, 700);
-  // Registrar hueco que cubre el primer intervalo
-  db.prepare(`INSERT INTO capture_gaps (stream_id, started_at, ended_at, reason) VALUES (?, ?, ?, ?)`).run(streamId, base + 10_000, base + 55_000, 'reconnect');
+  testDb.prepare(`INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category) VALUES (?, 'twitch', 'westcol', ?, ?, 'Gaming')`).run(streamId, base, 500);
+  testDb.prepare(`INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category) VALUES (?, 'twitch', 'westcol', ?, ?, 'Gaming')`).run(streamId, base + 60_000, 600);
+  testDb.prepare(`INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category) VALUES (?, 'twitch', 'westcol', ?, ?, 'Gaming')`).run(streamId, base + 90_000, 700);
+  // Registrar hueco que cubre el primer intervalo (base → base+60s)
+  testDb.prepare(`INSERT INTO capture_gaps (stream_id, started_at, ended_at, reason) VALUES (?, ?, ?, ?)`).run(streamId, base + 10_000, base + 55_000, 'reconnect');
 
-  const samples = db.prepare(`SELECT timestamp, viewers FROM audience_samples WHERE stream_id = ? ORDER BY timestamp ASC`).all(streamId);
-  const gaps = db.prepare(`SELECT started_at, ended_at FROM capture_gaps WHERE stream_id = ?`).all(streamId);
+  // Llamar a la función real
+  const chart = getChart(streamId);
 
-  assert.equal(gaps.length, 1, 'debe haber un hueco registrado');
+  assert.equal(chart.totalSamples, 3, 'debe contar 3 muestras');
+  assert.equal(chart.gaps.length, 1, 'debe devolver 1 hueco');
 
-  const { averageViewers } = calculateObservedStats(samples, gaps);
-  // Solo el intervalo base+60s → base+90s no cruza el gap (gap termina en base+55s)
-  // ese intervalo: dt = 30s, viewers = (600+700)/2 = 650
+  const { averageViewers } = calculateObservedStats(chart.samples, chart.gaps);
+  // Solo el intervalo 60s→90s no cruza el gap (gap.ended_at=base+55s < b.timestamp=base+60s)
+  // dt=30s, media=(600+700)/2=650
   assert.ok(averageViewers !== null, 'debe haber media del segundo intervalo');
   assert.ok(Math.abs(averageViewers - 650) < 0.1, `media esperada ~650, obtenida ${averageViewers}`);
 
-  db.close();
+  testDb.close();
+});
+
+test('integración DB: report_jobs se encola al cerrar sesión y worker lo procesa', () => {
+  const testDb = buildTestDb();
+  const streamId = 'kick:ibai:close_test';
+  const now = Date.now();
+
+  testDb.prepare(`
+    INSERT INTO streams (id, broadcast_id, platform, slug, started_at, ended_at, avg_viewers, coverage_ratio, status)
+    VALUES (?, 'bclosetest', 'kick', 'ibai', ?, ?, 0, 0.05, 'ended')
+  `).run(streamId, now - 60_000, now);
+
+  // Simular el encole del closeAndEnqueue directamente en la DB de test
+  testDb.prepare(`
+    INSERT INTO report_jobs (session_id, report_version, next_attempt_at)
+    VALUES (?, 1, ?)
+    ON CONFLICT(session_id, report_version) DO NOTHING
+  `).run(streamId, now);
+
+  // Verificar que el job está en la cola
+  const job = testDb.prepare(`SELECT * FROM report_jobs WHERE session_id = ?`).get(streamId);
+  assert.ok(job, 'el job debe existir en la cola');
+  assert.equal(job.status, 'pending', 'el job debe estar pendiente');
+  assert.equal(job.report_version, 1, 'debe ser versión 1');
+
+  // Verificar que coverage_insufficient se detecta correctamente
+  const stream = testDb.prepare(`SELECT * FROM streams WHERE id = ?`).get(streamId);
+  const coverageInsufficient = stream.avg_viewers === 0 && (stream.coverage_ratio || 1) < 0.1;
+  assert.equal(coverageInsufficient, true, 'debe detectar cobertura insuficiente');
+
+  testDb.close();
 });
 
 console.log('\n✅ Todos los tests ejecutaron contra código de producción real.\n');

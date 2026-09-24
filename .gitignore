@@ -1,5 +1,8 @@
 node_modules/
 .env
 data/*.sqlite*
+data/reports/
 *.log
 .DS_Store
+.edge-temp/
+public/test_*_snap.png

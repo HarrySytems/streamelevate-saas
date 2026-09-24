@@ -267,9 +267,53 @@ const stmts = {
   `)
 };
 
+function downsampleSamplesForChart(rawSamples, targetPoints = 1500) {
+  if (!rawSamples || rawSamples.length <= targetPoints) {
+    return rawSamples || [];
+  }
+  
+  const n = rawSamples.length;
+  const result = [];
+  result.push(rawSamples[0]); // Conservar inicio exacto siempre
+
+  const bucketCount = Math.floor(targetPoints / 2);
+  const bucketSize = (n - 2) / bucketCount;
+  
+  for (let i = 0; i < bucketCount; i++) {
+    const start = Math.floor(1 + i * bucketSize);
+    const end = Math.min(n - 1, Math.floor(1 + (i + 1) * bucketSize));
+    if (start >= end) continue;
+
+    let minSample = rawSamples[start];
+    let maxSample = rawSamples[start];
+
+    for (let j = start + 1; j < end; j++) {
+      const s = rawSamples[j];
+      if (s.viewers < minSample.viewers) minSample = s;
+      if (s.viewers > maxSample.viewers) maxSample = s;
+    }
+
+    if (minSample.timestamp <= maxSample.timestamp) {
+      if (minSample !== result[result.length - 1]) result.push(minSample);
+      if (maxSample !== minSample) result.push(maxSample);
+    } else {
+      if (maxSample !== result[result.length - 1]) result.push(maxSample);
+      if (minSample !== maxSample) result.push(minSample);
+    }
+  }
+
+  const last = rawSamples[n - 1];
+  if (result[result.length - 1] !== last) {
+    result.push(last);
+  }
+
+  return result;
+}
+
 module.exports = {
   db,
   stmts,
+  downsampleSamplesForChart,
   seedChannels(list) {
     const insertMany = db.transaction((channels) => {
       for (const ch of channels) {
@@ -309,49 +353,6 @@ module.exports = {
     stmts.insertChat.run(msg);
   },
 
-  downsampleSamplesForChart(rawSamples, targetPoints = 1500) {
-    if (!rawSamples || rawSamples.length <= targetPoints) {
-      return rawSamples || [];
-    }
-    
-    const n = rawSamples.length;
-    const result = [];
-    result.push(rawSamples[0]); // Conservar inicio exacto siempre
-
-    const bucketCount = Math.floor(targetPoints / 2);
-    const bucketSize = (n - 2) / bucketCount;
-    
-    for (let i = 0; i < bucketCount; i++) {
-      const start = Math.floor(1 + i * bucketSize);
-      const end = Math.min(n - 1, Math.floor(1 + (i + 1) * bucketSize));
-      if (start >= end) continue;
-
-      let minSample = rawSamples[start];
-      let maxSample = rawSamples[start];
-
-      for (let j = start + 1; j < end; j++) {
-        const s = rawSamples[j];
-        if (s.viewers < minSample.viewers) minSample = s;
-        if (s.viewers > maxSample.viewers) maxSample = s;
-      }
-
-      if (minSample.timestamp <= maxSample.timestamp) {
-        if (minSample !== result[result.length - 1]) result.push(minSample);
-        if (maxSample !== minSample) result.push(maxSample);
-      } else {
-        if (maxSample !== result[result.length - 1]) result.push(maxSample);
-        if (minSample !== maxSample) result.push(minSample);
-      }
-    }
-
-    const last = rawSamples[n - 1];
-    if (result[result.length - 1] !== last) {
-      result.push(last);
-    }
-
-    return result;
-  },
-
   getStreamDetails(streamId, maxChartPoints = 1500) {
     const stream = db.prepare(`SELECT * FROM streams WHERE id = ?`).get(streamId);
     if (!stream) return null;
@@ -362,7 +363,7 @@ module.exports = {
     const chatTimeline = stmts.getChatPerMinute.all(streamId);
 
     // Muestras adaptadas para pantalla (conservando picos y valles)
-    const chartSamples = this.downsampleSamplesForChart(allSamples, maxChartPoints);
+    const chartSamples = downsampleSamplesForChart(allSamples, maxChartPoints);
 
     return {
       stream,
@@ -390,7 +391,7 @@ module.exports = {
     const gaps = stmts.getGaps.all(sessionId);
 
     return {
-      samples: this.downsampleSamplesForChart(samples, targetPoints),
+      samples: downsampleSamplesForChart(samples, targetPoints),
       gaps,
       totalSamples: samples.length,
       firstObservedAt: samples[0]?.timestamp ?? null,

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { db, stmts, getStreamDetails } = require('./db');
+const { db, stmts, getStreamDetails, getSessionChart } = require('./db');
 const { getTelemetrySnapshot, memoryState, twitchSubscribed } = require('./collector');
 
 // GET /api/v1/health
@@ -44,7 +44,7 @@ router.get('/channels', (req, res) => {
   });
 });
 
-// GET /api/v1/streamers/:slug/live - Telemetría en tiempo real a 1ms
+// GET /api/v1/streamers/:slug/live - Telemetría en tiempo real
 router.get('/streamers/:slug/live', (req, res) => {
   const slug = req.params.slug.toLowerCase();
   const platform = req.query.platform || 'kick';
@@ -52,14 +52,40 @@ router.get('/streamers/:slug/live', (req, res) => {
   res.json(snapshot);
 });
 
-// GET /api/v1/streamers/:slug/session/:sessionId - Sesión consolidada para RadarStream
+// GET /api/v1/streamers/:slug/session/:sessionId - Sesión completa desde SQLite
 router.get('/streamers/:slug/session/:sessionId', (req, res) => {
   const sessionId = req.params.sessionId;
-  const details = getStreamDetails(sessionId);
-  if (!details) {
-    return res.status(404).json({ error: 'Sesión de stream no encontrada' });
+
+  // getSessionChart siempre lee de SQLite — no está limitado por el buffer de RAM
+  const chart = getSessionChart(sessionId);
+  if (!chart || chart.totalSamples === 0) {
+    // Fallback a getStreamDetails si no hay muestras en audience_samples (sesión muy nueva)
+    const details = getStreamDetails(sessionId);
+    if (!details) {
+      return res.status(404).json({ error: 'Sesión de stream no encontrada' });
+    }
+    return res.json(details);
   }
-  res.json(details);
+
+  // Enriquecer con metadatos de la sesión
+  const stream = db.prepare(`SELECT * FROM streams WHERE id = ?`).get(sessionId);
+  const chat = stmts.getChatStats.get(sessionId);
+  const topChatters = stmts.getTopChatters.all(sessionId);
+  const chatTimeline = stmts.getChatPerMinute.all(sessionId);
+
+  res.json({
+    stream,
+    samples: chart.samples,
+    gaps: chart.gaps,
+    total_samples_recorded: chart.totalSamples,
+    first_observed_at: chart.firstObservedAt,
+    last_observed_at: chart.lastObservedAt,
+    // coverage_insufficient: true cuando avg_viewers=0 y coverage_ratio<0.1
+    coverage_insufficient: stream && stream.avg_viewers === 0 && (stream.coverage_ratio || 1) < 0.1,
+    chat,
+    topChatters,
+    chatTimeline
+  });
 });
 
 // GET /api/v1/streamers/:slug/recent - Últimos directos
@@ -77,6 +103,8 @@ router.get('/streamers/:slug/recent', (req, res) => {
       ended_at: s.ended_at ? new Date(s.ended_at).toISOString() : null,
       peak_viewers: s.peak_viewers,
       avg_viewers: s.avg_viewers,
+      coverage_ratio: s.coverage_ratio,
+      coverage_insufficient: s.avg_viewers === 0 && (s.coverage_ratio || 1) < 0.1,
       total_messages: s.total_messages,
       unique_chatters: s.unique_chatters,
       status: s.status
