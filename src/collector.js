@@ -694,12 +694,12 @@ function startCollector() {
   // Primer barrido completo al arrancar
   runFullSweep();
 
-  // Fast cycle cada 15 segundos para streams en directo (viewers instantáneos)
-  fastPollTimer = setInterval(runFastCycle, 15000);
+  // Fast cycle cada 3 segundos para streams en directo (viewers instantáneos en tiempo real)
+  fastPollTimer = setInterval(runFastCycle, 3000);
 
-  // Full sweep cada 45 segundos para detectar inicios/apagados de streams
-  fullSweepTimer = setInterval(runFullSweep, 45000);
-  console.log('[StreamElevate Colector] Cadencia Inteligente Dual iniciada (Fast: 15s en vivo, Full: 45s general)');
+  // Full sweep cada 30 segundos para detectar inicios/apagados de streams
+  fullSweepTimer = setInterval(runFullSweep, 30000);
+  console.log('[StreamElevate Colector] Cadencia Inteligente Dual iniciada (Fast: 3s en vivo, Full: 30s general)');
 }
 
 function stopCollector() {

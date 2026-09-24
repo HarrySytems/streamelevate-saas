@@ -22,11 +22,12 @@
     body {
       background-color: var(--bg);
       color: var(--text-main);
-      height: 100vh;
+      min-height: 100vh;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
+      overflow-x: hidden;
     }
+    /* Top Bar */
     .topbar {
       background: #0f172a;
       border-bottom: 1px solid #1e293b;
@@ -36,7 +37,6 @@
       justify-content: space-between;
       gap: 16px;
       flex-wrap: wrap;
-      flex-shrink: 0;
     }
     .brand {
       display: flex;
@@ -116,18 +116,17 @@
       font-weight: 800;
     }
 
+    /* Full Canvas Container */
     .viewport {
       flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 12px 20px;
-      min-height: 0;
+      padding: 16px 20px;
     }
     .canvas-card {
       width: 100%;
       max-width: 1280px;
-      max-height: calc(100vh - 82px);
       aspect-ratio: 16 / 9;
       background: #090f15;
       border: 1px solid #1a2634;
@@ -142,16 +141,17 @@
       display: block;
     }
 
+    /* Floating Status Pill */
     .status-pill {
       position: absolute;
-      bottom: 12px;
+      bottom: 14px;
       left: 20px;
-      background: rgba(13, 19, 27, 0.92);
-      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(13, 19, 27, 0.90);
+      border: 1px solid rgba(255,255,255,0.12);
       backdrop-filter: blur(8px);
-      padding: 5px 14px;
+      padding: 6px 14px;
       border-radius: 20px;
-      font-size: 0.78rem;
+      font-size: 0.8rem;
       color: var(--text-muted);
       display: flex;
       align-items: center;
@@ -174,6 +174,7 @@
 </head>
 <body>
 
+  <!-- Top Bar Controls -->
   <header class="topbar">
     <div class="brand">
       <div class="brand-icon">⚡</div>
@@ -186,7 +187,7 @@
       </select>
 
       <button id="btnLiveMode" class="btn active" onclick="setMode('live')">
-        🔴 Modo En Vivo
+        🔴 Modo En Vivo (3s)
       </button>
 
       <button id="btnReplayMode" class="btn btn-replay" onclick="startReplay()">
@@ -203,6 +204,7 @@
     </div>
   </header>
 
+  <!-- Main Pure Graph Viewport -->
   <main class="viewport">
     <div class="canvas-card">
       <canvas id="radarCanvas" width="1280" height="720"></canvas>
@@ -214,12 +216,90 @@
   </main>
 
   <script>
-    // Parámetros de URL opcionales (ej: ?streamer=kick:brunenger o ?channel=illojuan)
+    // ==========================================
+    // MOTOR MATEMÁTICO PCHIP (Interpolación Suave de Alta Precisión)
+    // ==========================================
+    function cleanSamples(raw) {
+      const seen = new Set();
+      const cleaned = (raw || [])
+        .map(s => ({ t: Number(s.timestamp ?? s.t), v: Number(s.viewers ?? s.v) }))
+        .filter(s => Number.isFinite(s.t) && Number.isFinite(s.v) && s.v >= 0)
+        .sort((a, b) => a.t - b.t)
+        .filter(s => {
+          if (seen.has(s.t)) return false;
+          seen.add(s.t);
+          return true;
+        });
+
+      if (cleaned.length < 2) {
+        const now = Date.now();
+        if (cleaned.length === 1) return [{ t: cleaned[0].t - 30000, v: cleaned[0].v }, cleaned[0]];
+        return [{ t: now - 30000, v: 0 }, { t: now, v: 0 }];
+      }
+      return cleaned;
+    }
+
+    function computePchipSlopes(xs, ys) {
+      const n = xs.length;
+      const h = new Array(n - 1);
+      const delta = new Array(n - 1);
+      for (let i = 0; i < n - 1; i++) {
+        h[i] = xs[i + 1] - xs[i];
+        delta[i] = (ys[i + 1] - ys[i]) / (h[i] || 1);
+      }
+      const m = new Array(n);
+      if (n === 2) {
+        m[0] = m[1] = delta[0];
+        return m;
+      }
+      for (let i = 1; i < n - 1; i++) {
+        const d0 = delta[i - 1], d1 = delta[i];
+        if (d0 === 0 || d1 === 0 || (d0 > 0) !== (d1 > 0)) {
+          m[i] = 0;
+        } else {
+          const w0 = 2 * h[i] + h[i - 1];
+          const w1 = h[i] + 2 * h[i - 1];
+          m[i] = (w0 + w1) / (w0 / d0 + w1 / d1);
+        }
+      }
+      m[0] = ((2 * h[0] + h[1]) * delta[0] - h[0] * delta[1]) / (h[0] + h[1] || 1);
+      m[n - 1] = ((2 * h[n - 2] + h[n - 3]) * delta[n - 2] - h[n - 2] * delta[n - 3]) / (h[n - 2] + h[n - 3] || 1);
+      return m;
+    }
+
+    function hermite(x0, x1, y0, y1, m0, m1, x) {
+      const h = x1 - x0;
+      if (h <= 0) return y0;
+      const t = (x - x0) / h;
+      const t2 = t * t, t3 = t2 * t;
+      return (2*t3 - 3*t2 + 1)*y0 + (t3 - 2*t2 + t)*h*m0 + (-2*t3 + 3*t2)*y1 + (t3 - t2)*h*m1;
+    }
+
+    function createPchipInterpolator(samples) {
+      const s = cleanSamples(samples);
+      const xs = s.map(p => p.t);
+      const ys = s.map(p => p.v);
+      const slopes = computePchipSlopes(xs, ys);
+      return function(t) {
+        if (t <= xs[0]) return ys[0];
+        if (t >= xs[xs.length - 1]) return ys[ys.length - 1];
+        let lo = 0, hi = xs.length - 1;
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1;
+          if (xs[mid] <= t) lo = mid; else hi = mid;
+        }
+        return Math.max(0, hermite(xs[lo], xs[hi], ys[lo], ys[hi], slopes[lo], slopes[hi], t));
+      };
+    }
+
+    // ==========================================
+    // ESTADO DEL RENDERIZADO
+    // ==========================================
     const urlParams = new URLSearchParams(window.location.search);
     const paramStreamer = urlParams.get('streamer') || urlParams.get('channel');
     let hasCustomParam = false;
 
-    let currentSlug = 'brunenger';
+    let currentSlug = 'westcol';
     let currentPlatform = 'kick';
 
     if (paramStreamer) {
@@ -235,13 +315,13 @@
 
     let currentStreamerData = null;
     let currentSamples = [];
-    let processedPoints = []; // Muestras de la sesión
+    let densePoints = [];
 
     let streamerAvatarImg = null;
     let currentAvatarUrl = '';
 
-    let showEqualizerBars = true;
     let currentMode = 'live'; // 'live' | 'replay'
+    let showEqualizerBars = true;
     let replayProgress = 1;
     let replayAnimId = null;
 
@@ -252,24 +332,25 @@
     const canvas = document.getElementById('radarCanvas');
     const ctx = canvas.getContext('2d');
 
-    // Dimensiones técnicas calibradas (Aprovecha todo el ancho sin cortes)
+    // Margins clásicos calibrados del diseño Westcol
     const MARGIN = {
-      left: 85,
-      right: 45,
-      top: 100,
-      bottom: 630
+      left: 100,
+      right: 60,
+      top: 130,
+      bottom: 640
     };
-
-    function toggleEqualizerBars() {
-      showEqualizerBars = !showEqualizerBars;
-      document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
-    }
 
     function updateButtonTheme() {
       const isTwitch = (currentPlatform === 'twitch');
       const liveBtn = document.getElementById('btnLiveMode');
       if (liveBtn) {
         liveBtn.classList.toggle('btn-twitch', isTwitch);
+      }
+      const neon = isTwitch ? '#a970ff' : '#53fc18';
+      const liveDot = document.getElementById('liveDot');
+      if (liveDot && currentMode === 'live') {
+        liveDot.style.background = neon;
+        liveDot.style.boxShadow = `0 0 10px ${neon}`;
       }
     }
 
@@ -280,17 +361,20 @@
       if (mode === 'live') {
         if (replayAnimId) cancelAnimationFrame(replayAnimId);
         replayProgress = 1;
-        const neon = (currentPlatform === 'kick') ? '#53fc18' : '#a970ff';
-        document.getElementById('liveDot').style.background = neon;
-        document.getElementById('liveDot').style.boxShadow = `0 0 10px ${neon}`;
+        updateButtonTheme();
         updateStatusText();
       }
+    }
+
+    function toggleEqualizerBars() {
+      showEqualizerBars = !showEqualizerBars;
+      document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
     }
 
     function startReplay() {
       setMode('replay');
       replayProgress = 0;
-      const durationMs = 12000; // 12 segundos de animación fluida de inicio a presente
+      const durationMs = 12000; // 12 segundos de reproducción continua
       const startTime = performance.now();
 
       function step(now) {
@@ -319,11 +403,11 @@
       const secSinceSync = Math.max(0, Math.floor((Date.now() - lastSyncTime) / 1000));
       const vCount = Math.round(displayedViewerCount || currentStreamerData?.current_viewers || 0);
       document.getElementById('statusText').textContent = 
-        `🟢 TELEMETRÍA EN DIRECTO • ${currentSlug.toUpperCase()} (${currentPlatform.toUpperCase()}) • ${vCount.toLocaleString()} VIEWERS • Sincronizado hace ${secSinceSync}s • ${processedPoints.length} muestras`;
+        `🟢 TELEMETRÍA EN DIRECTO • ${currentSlug.toUpperCase()} (${currentPlatform.toUpperCase()}) • ${vCount.toLocaleString()} VIEWERS • Sincronizado hace ${secSinceSync}s • ${currentSamples.length} muestras`;
     }
 
     // ==========================================
-    // DIBUJADO DE LA GRÁFICA PURA (ESTILO RADARSTREAM)
+    // DIBUJADO DE LA GRÁFICA PURA (DISEÑO ORIGINAL WESTCOL)
     // ==========================================
     function draw() {
       requestAnimationFrame(draw);
@@ -332,15 +416,26 @@
       const H = canvas.height;
       const isKick = (currentPlatform === 'kick');
       const neon = isKick ? '#53fc18' : '#a970ff';
+      const areaColor = isKick ? 'rgba(83, 252, 24, 0.35)' : 'rgba(169, 112, 255, 0.35)';
 
-      // 1. Fondo Broadcast Oscuro
+      // 1. Fondo Broadcast Oscuro Clásico
       const bg = ctx.createLinearGradient(0, 0, W, H);
       bg.addColorStop(0, '#090f15');
       bg.addColorStop(1, '#05080c');
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
 
-      // 2. Marca de Agua Gigante (KICK o TWITCH)
+      // 2. Líneas de Cuadrícula Sutiles (Estilo broadcast)
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
+      ctx.lineWidth = 1;
+      for (let x = MARGIN.left; x <= W - MARGIN.right; x += 55) {
+        ctx.beginPath();
+        ctx.moveTo(x, MARGIN.top);
+        ctx.lineTo(x, MARGIN.bottom);
+        ctx.stroke();
+      }
+
+      // 3. Marca de Agua Gigante (KICK o TWITCH)
       ctx.save();
       ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
       ctx.font = '900 160px Arial, sans-serif';
@@ -349,7 +444,7 @@
       ctx.fillText(currentPlatform.toUpperCase(), (MARGIN.left + (W - MARGIN.right)) / 2, (MARGIN.top + MARGIN.bottom) / 2);
       ctx.restore();
 
-      // 3. Barra Neón Superior
+      // 4. Barra Neón Superior
       const accent = ctx.createLinearGradient(0, 0, W, 0);
       accent.addColorStop(0, 'transparent');
       accent.addColorStop(0.2, neon);
@@ -359,14 +454,14 @@
       ctx.fillStyle = accent;
       ctx.fillRect(0, 0, W, 3);
 
-      // 4. Header del Streamer (Arriba)
+      // 5. Header del Streamer (Arriba)
       const streamerName = (currentStreamerData?.slug || currentSlug).toUpperCase();
       const title = currentStreamerData?.title || 'Emisión en Directo';
       const category = currentStreamerData?.category || 'General';
       const isLive = Boolean(currentStreamerData?.is_live);
 
-      // Avatar con foto real o fallback
-      const avX = 65, avY = 56, avR = 28;
+      // Avatar con foto real o fallback estilizado
+      const avX = 65, avY = 60, avR = 30;
       ctx.save();
       ctx.strokeStyle = neon;
       ctx.lineWidth = 2.5;
@@ -394,37 +489,37 @@
       }
       ctx.restore();
 
-      // Badge de Plataforma sobre el avatar
+      // Badge de plataforma sobre el avatar
       ctx.save();
       ctx.fillStyle = neon;
       ctx.beginPath();
-      ctx.arc(avX + 20, avY + 20, 9.5, 0, Math.PI * 2);
+      ctx.arc(avX + 22, avY + 22, 10, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#000000';
       ctx.font = '900 11px Arial';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(isKick ? 'K' : 'T', avX + 20, avY + 21);
+      ctx.fillText(isKick ? 'K' : 'T', avX + 22, avY + 23);
       ctx.restore();
 
       // Textos de Cabecera
       ctx.fillStyle = '#ffffff';
-      ctx.font = '900 26px Arial, sans-serif';
+      ctx.font = '900 28px Arial, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(streamerName, 110, 48);
+      ctx.fillText(streamerName, 115, 52);
 
       // Badge LIVE
       ctx.fillStyle = isLive ? '#ef4444' : '#475569';
       ctx.beginPath();
-      ctx.roundRect(110, 60, isLive ? 68 : 78, 20, 4);
+      ctx.roundRect(115, 64, isLive ? 68 : 78, 20, 4);
       ctx.fill();
       ctx.fillStyle = '#ffffff';
       ctx.font = '800 11px Arial';
-      ctx.fillText(isLive ? '🔴 EN VIVO' : 'OFFLINE', 118, 74);
+      ctx.fillText(isLive ? '🔴 EN VIVO' : 'OFFLINE', 123, 78);
 
       // Título y Categoría
       ctx.fillStyle = '#94a3b8';
-      ctx.font = '500 13px Arial';
+      ctx.font = '500 14px Arial';
       let titleDisplay = `TÍTULO: ${title} • [${category}]`;
       if (ctx.measureText(titleDisplay).width > 700) {
         while (titleDisplay.length > 5 && ctx.measureText(titleDisplay).width > 680) {
@@ -432,27 +527,27 @@
         }
         titleDisplay += '…';
       }
-      ctx.fillText(titleDisplay, 195, 74);
+      ctx.fillText(titleDisplay, 200, 78);
 
       // Marca RADARSTREAM (Derecha Arriba)
       ctx.fillStyle = neon;
       ctx.font = '900 22px Arial';
       ctx.textAlign = 'right';
-      ctx.fillText('RADARSTREAM', W - 60, 48);
+      ctx.fillText('RADARSTREAM', W - 60, 52);
       ctx.fillStyle = '#64748b';
       ctx.font = '700 11px Arial';
-      ctx.fillText('LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 66);
+      ctx.fillText('LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 70);
 
-      // 5. Preparar Escala y Coordenadas de la Gráfica
-      if (processedPoints.length < 2) return;
+      // 6. Preparar Escala de Datos de la Gráfica
+      if (densePoints.length < 2) return;
 
-      const firstT = processedPoints[0].t;
-      const lastT = processedPoints[processedPoints.length - 1].t;
+      const firstT = densePoints[0].t;
+      const lastT = densePoints[densePoints.length - 1].t;
       const timeSpan = Math.max(1000, lastT - firstT);
 
-      // Pico máximo dinámico calibrado
+      // Buscar pico máximo para escalar eje Y dinámico
       let maxV = -Infinity;
-      processedPoints.forEach(p => { if (p.v > maxV) maxV = p.v; });
+      densePoints.forEach(p => { if (p.v > maxV) maxV = p.v; });
       maxV = Math.max(100, Math.max(maxV, targetViewerCount));
       const stepRound = maxV > 50000 ? 10000 : (maxV > 20000 ? 5000 : (maxV > 5000 ? 1000 : 500));
       const yCeil = Math.ceil((maxV * 1.15) / stepRound) * stepRound;
@@ -463,270 +558,159 @@
       const getX = (t) => MARGIN.left + ((t - firstT) / timeSpan) * graphW;
       const getY = (v) => MARGIN.bottom - (Math.max(0, v) / yCeil) * graphH;
 
-      // ==========================================
-      // CUADRÍCULA DE DIBUJANTE TÉCNICO (Mesa de Medición Real)
-      // ==========================================
-      const squareSize = 45; // Cuadrados de 45px × 45px
-      
-      // Cuadrícula Menor (Líneas milimétricas tenues)
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-      ctx.lineWidth = 1;
-      for (let x = MARGIN.left; x <= W - MARGIN.right; x += squareSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, MARGIN.top);
-        ctx.lineTo(x, MARGIN.bottom);
-        ctx.stroke();
-      }
-      for (let y = MARGIN.bottom; y >= MARGIN.top; y -= squareSize) {
-        ctx.beginPath();
-        ctx.moveTo(MARGIN.left, y);
-        ctx.lineTo(W - MARGIN.right, y);
-        ctx.stroke();
-      }
-
-      // Cuadrícula Mayor y Escalas de Medición (Cada 2 cuadrados)
-      const majorStep = squareSize * 2;
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-      ctx.lineWidth = 1.2;
-      for (let x = MARGIN.left; x <= W - MARGIN.right; x += majorStep) {
-        ctx.beginPath();
-        ctx.moveTo(x, MARGIN.top);
-        ctx.lineTo(x, MARGIN.bottom);
-        ctx.stroke();
-      }
-      for (let y = MARGIN.bottom; y >= MARGIN.top; y -= majorStep) {
-        ctx.beginPath();
-        ctx.moveTo(MARGIN.left, y);
-        ctx.lineTo(W - MARGIN.right, y);
-        ctx.stroke();
-      }
-
-      // Marco Técnico de Contorno de la Mesa de Dibujo (Sin cortes de pared)
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(MARGIN.left, MARGIN.top, graphW, graphH);
-
-      // Marcas de Cota / Ticks de Dibujante en los Ejes
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-      ctx.lineWidth = 1.5;
-      for (let x = MARGIN.left; x <= W - MARGIN.right; x += squareSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, MARGIN.bottom);
-        ctx.lineTo(x, MARGIN.bottom + 4);
-        ctx.stroke();
-      }
-      for (let y = MARGIN.bottom; y >= MARGIN.top; y -= squareSize) {
-        ctx.beginPath();
-        ctx.moveTo(MARGIN.left - 4, y);
-        ctx.lineTo(MARGIN.left, y);
-        ctx.stroke();
-      }
-      ctx.restore();
-
-      // ==========================================
-      // COTAS Y VALORES DE MEDICIÓN (Eje Y y Eje X)
-      // ==========================================
-      // 6. Eje Y (Espectadores Reales Calibrados)
+      // 7. Eje Y y Guías Horizontales
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.font = '600 11px -apple-system, sans-serif';
-      ctx.fillStyle = '#94a3b8';
-      const yStepCount = Math.min(8, Math.max(4, Math.floor(graphH / (squareSize * 2))));
-      for (let i = 0; i <= yStepCount; i++) {
-        const val = Math.round((yCeil / yStepCount) * i);
-        const yPos = MARGIN.bottom - (i / yStepCount) * graphH;
-        ctx.fillText(val.toLocaleString(), MARGIN.left - 8, yPos);
+      ctx.font = '600 12px Arial';
+      ctx.fillStyle = '#64748b';
+      const ySteps = 5;
+      for (let i = 0; i <= ySteps; i++) {
+        const val = Math.round((yCeil / ySteps) * i);
+        const yPos = MARGIN.bottom - (i / ySteps) * graphH;
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left, yPos);
+        ctx.lineTo(W - MARGIN.right, yPos);
+        ctx.stroke();
+
+        ctx.fillText(val.toLocaleString(), MARGIN.left - 12, yPos);
       }
 
-      // 7. Eje X (Tiempos de Medición Reales)
+      // 8. Eje X (Horarios)
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      const xStepCount = Math.min(8, Math.max(4, Math.floor(graphW / (squareSize * 3))));
-      for (let i = 0; i <= xStepCount; i++) {
-        const tVal = firstT + (timeSpan / xStepCount) * i;
-        const xPos = MARGIN.left + (i / xStepCount) * graphW;
+      const xSteps = 6;
+      for (let i = 0; i <= xSteps; i++) {
+        const tVal = firstT + (timeSpan / xSteps) * i;
+        const xPos = MARGIN.left + (i / xSteps) * graphW;
         const timeStr = new Date(tVal).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-        ctx.fillText(timeStr, xPos, MARGIN.bottom + 8);
+        ctx.fillText(timeStr, xPos, MARGIN.bottom + 10);
       }
 
-      // 8. Coordenadas de los Puntos Reales (Sin recortes, 100% de la pantalla)
-      const allCoords = processedPoints.map(p => ({
-        x: getX(p.t),
-        y: getY(p.v),
-        v: p.v,
-        t: p.t
-      }));
-
-      let activeCount = allCoords.length;
+      // 9. Filtrar puntos visibles según el modo (Live o Replay)
+      let activeLength = densePoints.length;
       if (currentMode === 'replay') {
-        activeCount = Math.max(2, Math.floor(replayProgress * allCoords.length));
+        activeLength = Math.max(2, Math.floor(replayProgress * densePoints.length));
       }
-      const activeCoords = allCoords.slice(0, activeCount);
-      if (activeCoords.length < 2) return;
-      const headPt = activeCoords[activeCoords.length - 1];
+      const visiblePoints = densePoints.slice(0, activeLength);
+      if (visiblePoints.length < 2) return;
 
       // Suavizado e interpolación de espectadores en vivo
       if (currentMode === 'live' && targetViewerCount > 0) {
-        displayedViewerCount += (targetViewerCount - displayedViewerCount) * 0.12;
-        headPt.v = displayedViewerCount;
-        headPt.y = getY(displayedViewerCount);
+        displayedViewerCount += (targetViewerCount - displayedViewerCount) * 0.14;
+        const head = visiblePoints[visiblePoints.length - 1];
+        head.v = displayedViewerCount;
       }
 
       // ==========================================
-      // 9. ECUALIZADOR REAL DE AUDIENCIA (Barras Tipo Alfiler Conectadas Como Títere)
+      // 10. BARRAS DE ECUALIZADOR NEÓN (Debajo de la curva - Estilo Westcol Original)
       // ==========================================
       if (showEqualizerBars) {
-        const numBars = 92; // Alta densidad de alfileres finos
-        const barW = 2.0;   // Fino como un alfiler
-        const stepX = graphW / numBars;
-        const now = performance.now() * 0.003;
+        const barStep = 8;
+        const now = performance.now() * 0.004;
+        const headX = getX(visiblePoints[visiblePoints.length - 1].t);
 
-        let pIdx = 0;
-        for (let b = 0; b < numBars; b++) {
-          const bx = MARGIN.left + b * stepX + stepX / 2;
-          if (bx > headPt.x) break;
+        for (let bx = MARGIN.left; bx <= headX; bx += barStep) {
+          const normX = Math.max(0, Math.min(1, (bx - MARGIN.left) / graphW));
+          const pIdx = Math.min(visiblePoints.length - 1, Math.floor(normX * visiblePoints.length));
+          const pVal = visiblePoints[pIdx]?.v || 0;
+          const baseY = getY(pVal);
 
-          // Altura REAL calculada de la curva en la coordenada X exacta
-          while (pIdx < activeCoords.length - 2 && activeCoords[pIdx + 1].x < bx) {
-            pIdx++;
-          }
-          const p0 = activeCoords[pIdx];
-          const p1 = activeCoords[pIdx + 1];
-          let curveY = MARGIN.bottom;
-          if (p0 && p1) {
-            const span = (p1.x - p0.x) || 1;
-            const ratio = Math.max(0, Math.min(1, (bx - p0.x) / span));
-            curveY = p0.y + ratio * (p1.y - p0.y);
-          } else {
-            curveY = headPt.y;
-          }
+          // Efecto de pulso senoidal orgánico estilo analizador de espectro de audio
+          const wave = (Math.sin(now * 2.2 + bx * 0.08) * 0.5 + 0.5) * 16;
+          const maxAvail = Math.max(0, MARGIN.bottom - baseY);
+          const barH = Math.max(4, Math.min(maxAvail, maxAvail * 0.45 + wave));
 
-          // Animación de respiración armónica viva ("Efecto Títere")
-          // Las barras oscilan armónicamente conectadas a la curva neón
-          const w1 = Math.sin(now * 3.2 + b * 0.35) * 0.045;
-          const w2 = Math.cos(now * 1.9 - b * 0.22) * 0.035;
-          const puppetPulse = Math.min(1.0, Math.max(0.15, 0.94 + w1 + w2));
-
-          const maxBarH = Math.max(0, MARGIN.bottom - curveY);
-          const barH = Math.max(3, maxBarH * puppetPulse);
-          if (barH <= 3 && maxBarH <= 3) continue;
-
-          // Gradiente luminoso neón de la aguja
           const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
-          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.75)' : 'rgba(169, 112, 255, 0.75)');
-          barGrad.addColorStop(0.35, isKick ? 'rgba(83, 252, 24, 0.35)' : 'rgba(169, 112, 255, 0.35)');
+          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
+          barGrad.addColorStop(0.5, isKick ? 'rgba(83, 252, 24, 0.20)' : 'rgba(169, 112, 255, 0.20)');
           barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
-          ctx.save();
           ctx.fillStyle = barGrad;
-          ctx.beginPath();
-          ctx.roundRect(bx - barW / 2, MARGIN.bottom - barH, barW, barH, [1, 1, 0, 0]);
-          ctx.fill();
+          ctx.fillRect(bx, MARGIN.bottom - barH, 4, barH);
 
-          // Puntero de luz en la punta del alfiler (LED Phosphor)
-          ctx.fillStyle = isKick ? '#bbf7d0' : '#f3e8ff';
-          ctx.fillRect(bx - barW / 2, MARGIN.bottom - barH, barW, 1.8);
-
-          // Hilo conector técnico tipo títere hacia la curva superior
-          if (MARGIN.bottom - barH > curveY + 1) {
-            ctx.strokeStyle = isKick ? 'rgba(83, 252, 24, 0.30)' : 'rgba(169, 112, 255, 0.30)';
-            ctx.lineWidth = 0.8;
-            ctx.setLineDash([2, 2]);
-            ctx.beginPath();
-            ctx.moveTo(bx, MARGIN.bottom - barH);
-            ctx.lineTo(bx, curveY);
-            ctx.stroke();
-
-            // Pequeño nódulo de anclaje en la curva
-            ctx.fillStyle = neon;
-            ctx.beginPath();
-            ctx.arc(bx, curveY, 1.2, 0, Math.PI * 2);
-            ctx.fill();
-          }
-          ctx.restore();
+          // Puntero luminoso en la punta de cada barra
+          ctx.fillStyle = isKick ? 'rgba(187, 247, 208, 0.8)' : 'rgba(243, 232, 255, 0.8)';
+          ctx.fillRect(bx, MARGIN.bottom - barH, 4, 1.5);
         }
       }
 
       // ==========================================
-      // 10. ÁREA DE RELLENO BAJO LA CURVA
+      // 11. ÁREA CON GRADIENTE SUAVE
       // ==========================================
       const areaGrad = ctx.createLinearGradient(0, MARGIN.top, 0, MARGIN.bottom);
-      areaGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.20)' : 'rgba(169, 112, 255, 0.20)');
-      areaGrad.addColorStop(0.65, isKick ? 'rgba(83, 252, 24, 0.04)' : 'rgba(169, 112, 255, 0.04)');
+      areaGrad.addColorStop(0, areaColor);
+      areaGrad.addColorStop(0.7, isKick ? 'rgba(83, 252, 24, 0.06)' : 'rgba(169, 112, 255, 0.06)');
       areaGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.fillStyle = areaGrad;
       ctx.beginPath();
-      ctx.moveTo(activeCoords[0].x, MARGIN.bottom);
-      ctx.lineTo(activeCoords[0].x, activeCoords[0].y);
-      for (let i = 0; i < activeCoords.length - 1; i++) {
-        const p0 = activeCoords[i];
-        const p1 = activeCoords[i + 1];
-        const midX = (p0.x + p1.x) / 2;
-        const midY = (p0.y + p1.y) / 2;
-        ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
-      }
-      ctx.lineTo(headPt.x, headPt.y);
-      ctx.lineTo(headPt.x, MARGIN.bottom);
+      ctx.moveTo(getX(visiblePoints[0].t), MARGIN.bottom);
+      visiblePoints.forEach(p => ctx.lineTo(getX(p.t), getY(p.v)));
+      ctx.lineTo(getX(visiblePoints[visiblePoints.length - 1].t), MARGIN.bottom);
       ctx.closePath();
       ctx.fill();
 
       // ==========================================
-      // 11. HILO DELGADITO NEÓN (Máxima Precisión 1-Viewer)
+      // 12. LÍNEA NEÓN RESPLANDECIENTE (GLOW ORGÁNICO SUAVE)
       // ==========================================
       ctx.save();
       ctx.strokeStyle = neon;
-      ctx.lineWidth = 1.6; // Hilo fino de precisión
+      ctx.lineWidth = 3.5;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 4; // Resplandor limpio sin manchar
+      ctx.shadowBlur = 16;
       ctx.beginPath();
-      ctx.moveTo(activeCoords[0].x, activeCoords[0].y);
-      for (let i = 0; i < activeCoords.length - 1; i++) {
-        const p0 = activeCoords[i];
-        const p1 = activeCoords[i + 1];
-        const midX = (p0.x + p1.x) / 2;
-        const midY = (p0.y + p1.y) / 2;
-        ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
-      }
-      ctx.lineTo(headPt.x, headPt.y);
+      visiblePoints.forEach((p, idx) => {
+        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
+        else ctx.lineTo(getX(p.t), getY(p.v));
+      });
       ctx.stroke();
+      ctx.restore();
 
-      // Núcleo blanco del hilo
+      // Trazo interior blanco nítido
+      ctx.save();
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 0.8;
-      ctx.shadowBlur = 0;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      visiblePoints.forEach((p, idx) => {
+        if (idx === 0) ctx.moveTo(getX(p.t), getY(p.v));
+        else ctx.lineTo(getX(p.t), getY(p.v));
+      });
       ctx.stroke();
       ctx.restore();
 
       // ==========================================
-      // 12. PLAYHEAD PIN EN LA PUNTA DE LA GRÁFICA
+      // 13. AGUJA / PLAYHEAD EN LA PUNTA DE LA GRÁFICA
       // ==========================================
-      const hX = headPt.x;
-      const hY = headPt.y;
+      const head = visiblePoints[visiblePoints.length - 1];
+      const hX = getX(head.t);
+      const hY = getY(head.v);
 
+      // Halo pulsante exterior
       ctx.save();
       ctx.strokeStyle = neon;
       ctx.lineWidth = 2;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 15;
       ctx.beginPath();
-      ctx.arc(hX, hY, 6, 0, Math.PI * 2);
+      ctx.arc(hX, hY, 8, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
 
+      // Núcleo blanco
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(hX, hY, 3, 0, Math.PI * 2);
+      ctx.arc(hX, hY, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Badge Flotante de Viewers Reales
-      const badgeText = `${Math.round(headPt.v).toLocaleString()} VIEWERS`;
-      ctx.font = '900 12px Arial';
+      // Badge flotante sobre la punta con el número exacto
+      const badgeText = `${Math.round(head.v).toLocaleString()} VIEWERS`;
+      ctx.font = '900 13px Arial';
       const bW = ctx.measureText(badgeText).width + 16;
       const bH = 24;
       const bX = Math.min(W - MARGIN.right - bW, Math.max(MARGIN.left, hX - bW / 2));
-      const bY = Math.max(MARGIN.top - 10, hY - 32);
+      const bY = Math.max(MARGIN.top - 10, hY - 34);
 
       ctx.save();
       ctx.fillStyle = '#0f172a';
@@ -748,7 +732,7 @@
     }
 
     // ==========================================
-    // CARGA Y PROCESAMIENTO DE DATOS EN TIEMPO REAL
+    // CARGA DE DATOS DE LA API EN TIEMPO REAL
     // ==========================================
     async function loadStreamerData(slug, platform) {
       try {
@@ -774,7 +758,7 @@
           img.src = currentAvatarUrl;
         }
 
-        // Cargar muestras históricas de la sesión
+        // Cargar historial de muestras desde la sesión activa
         if (currentStreamerData.stream_id) {
           const sessRes = await fetch(`/api/v1/streamers/${slug}/session/${currentStreamerData.stream_id}`);
           if (sessRes.ok) {
@@ -789,37 +773,41 @@
           const now = Date.now();
           const curV = currentStreamerData.current_viewers || 0;
           currentSamples = [
-            { timestamp: now - 30000, viewers: Math.max(0, curV - 10) },
-            { timestamp: now - 15000, viewers: Math.max(0, curV - 4) },
+            { timestamp: (currentStreamerData.started_at || now - 60000), viewers: Math.round(curV * 0.8) },
+            { timestamp: now - 30000, viewers: Math.round(curV * 0.95) },
             { timestamp: now, viewers: curV }
           ];
         }
 
-        // 1. Conservar TODAS las muestras reales registradas (fidelidad 1-viewer)
-        const deduped = [];
-        for (let i = 0; i < currentSamples.length; i++) {
-          const cur = { 
-            t: Number(currentSamples[i].timestamp ?? currentSamples[i].t), 
-            v: Number(currentSamples[i].viewers ?? currentSamples[i].v) 
-          };
-          const last = deduped[deduped.length - 1];
-          if (!last || last.t !== cur.t) {
-            deduped.push(cur);
+        // Si el stream está en directo, sincronizar el último punto con la hora y viewers actuales
+        if (currentStreamerData.is_live && currentSamples.length > 0) {
+          const now = Date.now();
+          const lastSample = currentSamples[currentSamples.length - 1];
+          if (now - lastSample.timestamp > 15000) {
+            currentSamples.push({ timestamp: now, viewers: targetViewerCount });
+          } else {
+            lastSample.viewers = targetViewerCount;
+            lastSample.timestamp = now;
           }
         }
 
-        processedPoints = deduped;
+        // Remuestrear suavemente con PCHIP a puntos densos de alta fidelidad
+        const cleaned = cleanSamples(currentSamples);
+        const interp = createPchipInterpolator(cleaned);
+        const t0 = cleaned[0].t;
+        const t1 = cleaned[cleaned.length - 1].t;
+        const span = Math.max(1000, t1 - t0);
 
-        // Asegurar que el último punto tenga exactamente los viewers actuales y la hora actual
-        if (processedPoints.length > 0) {
-          const lastPt = processedPoints[processedPoints.length - 1];
-          const now = Date.now();
-          if (now - lastPt.t > 15000) {
-            processedPoints.push({ t: now, v: currentStreamerData.current_viewers });
-          } else {
-            lastPt.v = currentStreamerData.current_viewers;
-            lastPt.t = now;
-          }
+        densePoints = [];
+        const count = Math.max(120, Math.min(800, cleaned.length * 15));
+        for (let i = 0; i <= count; i++) {
+          const t = t0 + (i / count) * span;
+          densePoints.push({ t, v: interp(t) });
+        }
+
+        // Asegurar que el punto final coincida con los viewers exactos
+        if (densePoints.length > 0 && targetViewerCount > 0) {
+          densePoints[densePoints.length - 1].v = targetViewerCount;
         }
 
         updateStatusText();
@@ -869,7 +857,7 @@
       currentPlatform = plat.toLowerCase();
       displayedViewerCount = 0;
       currentSamples = [];
-      processedPoints = [];
+      densePoints = [];
       if (currentMode === 'replay') {
         setMode('live');
       }
@@ -888,13 +876,14 @@
       }
     }, 1000);
 
-    // Polling de telemetría automática cada 3 segundos (sin requerir F5)
+    // Sondeo de telemetría automática cada 2.5 segundos (sin requerir F5)
     setInterval(() => {
       if (currentMode === 'live') {
         loadStreamerData(currentSlug, currentPlatform);
       }
-    }, 3000);
+    }, 2500);
 
+    // Iniciar bucle de dibujo a 60fps
     requestAnimationFrame(draw);
   </script>
 </body>
