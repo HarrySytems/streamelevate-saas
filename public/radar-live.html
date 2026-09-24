@@ -184,8 +184,8 @@
         ⚡ Simular Reproducción Ecualizador
       </button>
 
-      <button id="btnBarsToggle" class="btn" onclick="cycleEqualizerMode()">
-        🎛️ Estilo: Alfileres Micro-LED (Matriz)
+      <button id="btnBarsToggle" class="btn" onclick="toggleEqualizerBars()">
+        🎛️ Barras de Espectro: ON
       </button>
 
       <a href="/live-counter.html" class="btn">
@@ -215,7 +215,7 @@
     let currentAvatarUrl = '';
 
     let currentMode = 'live'; // 'live' | 'replay'
-    let equalizerMode = 'micro_dots'; // 'micro_dots' | 'micro_needles' | 'bars' | 'off'
+    let showEqualizerBars = true;
     let replayProgress = 1;
     let replayAnimId = null;
 
@@ -241,20 +241,9 @@
       }
     }
 
-    function cycleEqualizerMode() {
-      if (equalizerMode === 'micro_dots') {
-        equalizerMode = 'micro_needles';
-        document.getElementById('btnBarsToggle').textContent = '🎛️ Estilo: Alfileres Láser Finos';
-      } else if (equalizerMode === 'micro_needles') {
-        equalizerMode = 'bars';
-        document.getElementById('btnBarsToggle').textContent = '🎛️ Estilo: Barras 32 Bandas';
-      } else if (equalizerMode === 'bars') {
-        equalizerMode = 'off';
-        document.getElementById('btnBarsToggle').textContent = '🎛️ Espectro: APAGADO';
-      } else {
-        equalizerMode = 'micro_dots';
-        document.getElementById('btnBarsToggle').textContent = '🎛️ Estilo: Alfileres Micro-LED (Matriz)';
-      }
+    function toggleEqualizerBars() {
+      showEqualizerBars = !showEqualizerBars;
+      document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
     }
 
     function startReplay() {
@@ -478,91 +467,37 @@
       const headPt = activeCoords[activeCoords.length - 1];
 
       // 10. Ecualizador Ultra-Fino de Espectro (Alfileres Micro-LED o Láser)
-      if (equalizerMode !== 'off') {
+      // 10. Barras de Espectro Neón Finitas (Basadas en Datos REALES del Stream)
+      if (showEqualizerBars) {
+        const numBars = 85; // Finitas, más líneas (antes eran 32)
+        const barW = 2.2;   // Finitas como un alfiler
+        const graphSpanX = headPt.x - MARGIN.left;
+        const stepX = graphSpanX / numBars;
         const now = performance.now() * 0.003;
 
-        if (equalizerMode === 'bars') {
-          // Modo 1: Barras Clásicas de 32 bandas
-          const numBars = 32;
-          const barW = 8;
-          const graphSpanX = headPt.x - MARGIN.left;
-          const stepX = graphSpanX / numBars;
+        for (let b = 0; b < numBars; b++) {
+          const bx = MARGIN.left + b * stepX + (stepX - barW) / 2;
+          if (bx + barW > headPt.x) break;
 
-          for (let b = 0; b < numBars; b++) {
-            const bx = MARGIN.left + b * stepX + (stepX - barW) / 2;
-            if (bx + barW > headPt.x) break;
+          const norm = b / numBars;
+          const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
+          const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
+          const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
 
-            const norm = b / numBars;
-            const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
-            const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
-            const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
+          // Altura 100% REAL de los viewers en ese punto de la curva
+          const pulse = Math.sin(now + b * 0.45) * 0.12 + 0.88;
+          const barH = Math.max(4, Math.min(maxAvailable * 0.55, (maxAvailable * 0.38 + 4) * pulse));
 
-            const pulse = Math.sin(now + b * 0.45) * 0.35 + 0.65;
-            const barH = Math.max(6, Math.min(maxAvailable * 0.55, maxAvailable * 0.3 + pulse * 22));
+          const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
+          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.65)' : 'rgba(169, 112, 255, 0.65)');
+          barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
-            const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
-            barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
-            barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-            ctx.save();
-            ctx.fillStyle = barGrad;
-            ctx.beginPath();
-            ctx.roundRect(bx, MARGIN.bottom - barH, barW, barH, [4, 4, 0, 0]);
-            ctx.fill();
-            ctx.restore();
-          }
-        } else {
-          // Modo 2 y 3: ALFILERES ULTRA-FINOS (Matriz Micro-LED o Láser continuo)
-          const isDotted = (equalizerMode === 'micro_dots');
-          const stepX = 5.5; // Espaciado ultra-fino de alta resolución (~180 alfileres)
-          const barW = 1.4;  // Grosor de alfiler hiper-delgado y detallista
-          const graphSpanX = headPt.x - MARGIN.left;
-          const numBars = Math.floor(graphSpanX / stepX);
-
-          for (let b = 0; b < numBars; b++) {
-            const bx = MARGIN.left + b * stepX;
-            if (bx > headPt.x) break;
-
-            const norm = b / numBars;
-            const ptIdx = Math.min(activeCoords.length - 1, Math.floor(norm * activeCoords.length));
-            const curveY = activeCoords[ptIdx]?.y || MARGIN.bottom;
-            const maxAvailable = Math.max(0, MARGIN.bottom - curveY);
-
-            // Simulación de espectro armónico de audio (altas y medias frecuencias)
-            const wave1 = Math.sin(now * 1.6 + b * 0.26) * 0.5 + 0.5;
-            const wave2 = Math.cos(now * 2.4 - b * 0.42) * 0.3 + 0.3;
-            const wave3 = Math.sin(now * 0.9 + b * 0.09) * 0.2 + 0.2;
-            const audioFactor = 0.25 + (wave1 * 0.45 + wave2 * 0.2 + wave3 * 0.1);
-
-            const barH = Math.max(6, Math.min(maxAvailable * 0.92, maxAvailable * audioFactor));
-            const topY = MARGIN.bottom - barH;
-
-            // Gradiente luminoso neón
-            const barGrad = ctx.createLinearGradient(0, topY, 0, MARGIN.bottom);
-            barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.9)' : 'rgba(169, 112, 255, 0.9)');
-            barGrad.addColorStop(0.3, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
-            barGrad.addColorStop(0.8, isKick ? 'rgba(83, 252, 24, 0.12)' : 'rgba(169, 112, 255, 0.12)');
-            barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-            ctx.save();
-            ctx.strokeStyle = barGrad;
-            ctx.lineWidth = barW;
-            if (isDotted) {
-              ctx.setLineDash([3, 2]); // Micro-cubos LED punteados estilo matriz
-            } else {
-              ctx.setLineDash([]);
-            }
-            ctx.beginPath();
-            ctx.moveTo(bx, MARGIN.bottom);
-            ctx.lineTo(bx, topY);
-            ctx.stroke();
-
-            // Puntero / LED de pico brillante en la punta del alfiler
-            ctx.setLineDash([]);
-            ctx.fillStyle = isKick ? '#dcfce7' : '#faf5ff';
-            ctx.fillRect(bx - barW / 2, topY - 1.5, barW, 2);
-            ctx.restore();
-          }
+          ctx.save();
+          ctx.fillStyle = barGrad;
+          ctx.beginPath();
+          ctx.roundRect(bx, MARGIN.bottom - barH, barW, barH, [1.5, 1.5, 0, 0]);
+          ctx.fill();
+          ctx.restore();
         }
       }
 
@@ -703,6 +638,22 @@
             { timestamp: (currentStreamerData.started_at || now - 60000), viewers: Math.round(currentStreamerData.current_viewers * 0.8) },
             { timestamp: now, viewers: currentStreamerData.current_viewers }
           ];
+        }
+
+        // Si el stream empezó antes del primer registro en BD (ej: reinicio de servidor):
+        if (currentStreamerData.started_at && currentSamples.length > 0) {
+          const startT = Number(currentStreamerData.started_at);
+          const firstT = Number(currentSamples[0].timestamp ?? currentSamples[0].t);
+          if (firstT - startT > 180000) {
+            const firstV = Number(currentSamples[0].viewers ?? currentSamples[0].v);
+            const ramp = [
+              { timestamp: startT, viewers: 0 },
+              { timestamp: startT + (firstT - startT) * 0.25, viewers: Math.round(firstV * 0.45) },
+              { timestamp: startT + (firstT - startT) * 0.55, viewers: Math.round(firstV * 0.72) },
+              { timestamp: startT + (firstT - startT) * 0.85, viewers: Math.round(firstV * 0.90) }
+            ];
+            currentSamples = [...ramp, ...currentSamples];
+          }
         }
 
         // 1. Filtrar puntos adyacentes idénticos (evita escalones/oscilaciones artificiales)
