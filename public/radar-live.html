@@ -718,8 +718,11 @@
       ctx.arc(hX, hY, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Badge flotante sobre la punta con el número exacto
-      const badgeText = `${Math.round(hV).toLocaleString()} VIEWERS`;
+      // Badge flotante sobre la punta con el número exacto (con media final fija al completar)
+      let badgeText = `${Math.round(hV).toLocaleString()} VIEWERS`;
+      if (currentMode === 'replay' && replayProgress === 1 && currentStreamerData?.avg_viewers) {
+        badgeText = `FINAL: ${Math.round(hV).toLocaleString()} • MEDIA: ${Math.round(currentStreamerData.avg_viewers).toLocaleString()}`;
+      }
       ctx.font = '900 13px Arial';
       const bW = ctx.measureText(badgeText).width + 16;
       const bH = 24;
@@ -781,6 +784,9 @@
             const sessData = await sessRes.json();
             if (Array.isArray(sessData.samples) && sessData.samples.length > 0) {
               currentSamples = sessData.samples;
+            }
+            if (sessData.stream?.avg_viewers) {
+              currentStreamerData.avg_viewers = sessData.stream.avg_viewers;
             }
           }
         }

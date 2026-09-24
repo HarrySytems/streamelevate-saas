@@ -32,14 +32,18 @@ function initDb() {
 
     CREATE TABLE IF NOT EXISTS streams (
       id TEXT PRIMARY KEY,
+      broadcast_id TEXT,
       platform TEXT NOT NULL,
       slug TEXT NOT NULL,
       title TEXT,
       category TEXT,
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
+      last_live_at INTEGER,
+      first_offline_at INTEGER,
       peak_viewers INTEGER DEFAULT 0,
       avg_viewers REAL DEFAULT 0,
+      coverage_ratio REAL DEFAULT 1.0,
       total_messages INTEGER DEFAULT 0,
       unique_chatters INTEGER DEFAULT 0,
       status TEXT DEFAULT 'live'
@@ -98,6 +102,21 @@ function initDb() {
   } catch (e) {
     console.warn('[DB] Aviso migracion canales:', e.message);
   }
+  try {
+    db.exec(`ALTER TABLE streams ADD COLUMN broadcast_id TEXT;`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE streams ADD COLUMN last_live_at INTEGER;`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE streams ADD COLUMN first_offline_at INTEGER;`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE streams ADD COLUMN coverage_ratio REAL DEFAULT 1.0;`);
+  } catch (e) {}
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_audience_samples_stream ON audience_samples(stream_id, timestamp);`);
+  } catch (e) {}
 }
 
 initDb();
@@ -134,12 +153,14 @@ const stmts = {
   `),
 
   createStream: db.prepare(`
-    INSERT INTO streams (id, platform, slug, title, category, started_at, peak_viewers, status)
-    VALUES (@id, @platform, @slug, @title, @category, @started_at, @peak_viewers, 'live')
+    INSERT INTO streams (id, broadcast_id, platform, slug, title, category, started_at, peak_viewers, last_live_at, status)
+    VALUES (@id, @broadcast_id, @platform, @slug, @title, @category, @started_at, @peak_viewers, @last_live_at, 'live')
     ON CONFLICT(id) DO UPDATE SET
+      broadcast_id = coalesce(excluded.broadcast_id, streams.broadcast_id),
       title = coalesce(excluded.title, streams.title),
       category = coalesce(excluded.category, streams.category),
       peak_viewers = max(streams.peak_viewers, excluded.peak_viewers),
+      last_live_at = max(coalesce(streams.last_live_at, 0), coalesce(excluded.last_live_at, 0)),
       status = 'live'
   `),
 
@@ -147,7 +168,8 @@ const stmts = {
     UPDATE streams SET
       title = coalesce(@title, title),
       category = coalesce(@category, category),
-      peak_viewers = max(peak_viewers, @viewers)
+      peak_viewers = max(peak_viewers, @viewers),
+      last_live_at = max(coalesce(last_live_at, 0), coalesce(@last_live_at, 0))
     WHERE id = @id
   `),
 
@@ -156,6 +178,9 @@ const stmts = {
       ended_at = @ended_at,
       status = 'ended',
       avg_viewers = @avg_viewers,
+      coverage_ratio = coalesce(@coverage_ratio, 1.0),
+      last_live_at = coalesce(@last_live_at, last_live_at),
+      first_offline_at = coalesce(@first_offline_at, first_offline_at),
       total_messages = @total_messages,
       unique_chatters = @unique_chatters
     WHERE id = @id
@@ -245,16 +270,64 @@ module.exports = {
     stmts.insertChat.run(msg);
   },
 
-  getStreamDetails(streamId) {
+  downsampleSamplesForChart(rawSamples, targetPoints = 1500) {
+    if (!rawSamples || rawSamples.length <= targetPoints) {
+      return rawSamples || [];
+    }
+    
+    const n = rawSamples.length;
+    const result = [];
+    result.push(rawSamples[0]); // Conservar inicio exacto siempre
+
+    const bucketCount = Math.floor(targetPoints / 2);
+    const bucketSize = (n - 2) / bucketCount;
+    
+    for (let i = 0; i < bucketCount; i++) {
+      const start = Math.floor(1 + i * bucketSize);
+      const end = Math.min(n - 1, Math.floor(1 + (i + 1) * bucketSize));
+      if (start >= end) continue;
+
+      let minSample = rawSamples[start];
+      let maxSample = rawSamples[start];
+
+      for (let j = start + 1; j < end; j++) {
+        const s = rawSamples[j];
+        if (s.viewers < minSample.viewers) minSample = s;
+        if (s.viewers > maxSample.viewers) maxSample = s;
+      }
+
+      if (minSample.timestamp <= maxSample.timestamp) {
+        if (minSample !== result[result.length - 1]) result.push(minSample);
+        if (maxSample !== minSample) result.push(maxSample);
+      } else {
+        if (maxSample !== result[result.length - 1]) result.push(maxSample);
+        if (minSample !== maxSample) result.push(minSample);
+      }
+    }
+
+    const last = rawSamples[n - 1];
+    if (result[result.length - 1] !== last) {
+      result.push(last);
+    }
+
+    return result;
+  },
+
+  getStreamDetails(streamId, maxChartPoints = 1500) {
     const stream = db.prepare(`SELECT * FROM streams WHERE id = ?`).get(streamId);
     if (!stream) return null;
-    const samples = stmts.getAudienceSamples.all(streamId);
+    const allSamples = stmts.getAudienceSamples.all(streamId);
     const chat = stmts.getChatStats.get(streamId);
     const topChatters = stmts.getTopChatters.all(streamId);
     const chatTimeline = stmts.getChatPerMinute.all(streamId);
+
+    // Muestras adaptadas para pantalla (conservando picos y valles)
+    const chartSamples = this.downsampleSamplesForChart(allSamples, maxChartPoints);
+
     return {
       stream,
-      samples,
+      samples: chartSamples,
+      total_samples_recorded: allSamples.length,
       chat,
       topChatters,
       chatTimeline
