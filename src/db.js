@@ -262,7 +262,8 @@ module.exports = {
       id: streamId,
       title,
       category,
-      viewers
+      viewers,
+      last_live_at: timestamp
     });
   },
 

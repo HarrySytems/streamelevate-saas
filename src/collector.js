@@ -700,7 +700,19 @@ async function pollTwitchBatch(channels) {
         }
       }
 
-      // Identificación segura de emisión (Matrícula)
+      // Recuperar sesión activa PRIMERO (antes de resolveBroadcastIdentity)
+      let active = memoryState.activeStreams.get(key);
+
+      // Si había un cierre pendiente que falló antes, reintentar primero
+      if (active && active.pendingClose) {
+        const ok = closeStreamSession(active);
+        if (ok) {
+          memoryState.activeStreams.delete(key);
+          active = null;
+        }
+      }
+
+      // Identificación segura de emisión (Matrícula) — ahora active ya está declarado
       const identity = resolveBroadcastIdentity(slug, 'twitch', stream, active, now);
       const broadcastId = identity.broadcastId;
       const streamId = `twitch:${slug}:${broadcastId}`;
@@ -714,17 +726,6 @@ async function pollTwitchBatch(channels) {
         current_title: title,
         last_checked_at: now
       });
-
-      let active = memoryState.activeStreams.get(key);
-
-      // Si había un cierre pendiente que falló antes, reintentar primero
-      if (active && active.pendingClose) {
-        const ok = closeStreamSession(active);
-        if (ok) {
-          memoryState.activeStreams.delete(key);
-          active = null;
-        }
-      }
 
       if (isLive) {
         // Si la sesión activa era provisional y ahora llegó el ID oficial, asociarlo sin fragmentar
