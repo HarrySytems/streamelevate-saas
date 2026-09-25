@@ -1,331 +1,123 @@
-/**
- * report-worker.js
- * Consumidor de la cola report_jobs.
- * Se ejecuta en el mismo proceso (arrancado desde server.js).
- *
- * Flujo:
- *  - En cada ciclo: liberar leases vencidas (recuperación de caídas o jobs muertos).
- *  - Reclamar trabajo pendiente atómicamente.
- *  - Fase 1: Agregación de datos de sesión → Generar JSON final y texto del post.
- *  - Fase 2: Validación de renderizado (Canvas / FFmpeg).
- *            Si el motor de renderizado no está conectado o los archivos no están listos,
- *            el trabajo se marca como 'pending_render' (NUNCA como 'done' con archivos falsos).
- *  - Cuando los archivos multimedia reales existen y pasan la validación estructural/decodificación,
- *    el trabajo se sella como 'done'.
- */
-
 'use strict';
-
-const path = require('path');
-const fs = require('fs');
-const { execSync } = require('child_process');
-const { db } = require('./db');
-
-const MAX_ATTEMPTS = 5;
-const LEASE_DURATION_MS = 2 * 60 * 1000; // 2 minutos de reserva por intento
-const POLL_INTERVAL_MS = 30_000;
-
-// Directorio de salida configurable (aislable para tests mediante TEST_REPORTS_DIR)
+const fs = require('node:fs'), path = require('node:path');
+const { randomUUID } = require('node:crypto');
+const { calculateObservedStats } = require('./session-state');
+const { renderReport } = require('./report-renderer');
+const { validatePngContent, validateMp4Content, inspectMp4 } = require('./media-tools');
 function getOutputDir() {
-  const dir = process.env.TEST_REPORTS_DIR || path.join(__dirname, '..', 'data', 'reports');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  const dir = process.env.TEST_REPORTS_DIR || process.env.REPORTS_DIR || path.join(__dirname, '..', 'data', 'reports');
+  fs.mkdirSync(dir, { recursive: true }); return dir;
 }
-
-// Al arrancar y en cada ciclo: liberar jobs con lease vencida
-function releaseExpiredLeases() {
-  try {
-    const now = Date.now();
-    const result = db.prepare(`
-      UPDATE report_jobs
-      SET status = 'pending', lease_until = NULL, next_attempt_at = ?
-      WHERE status = 'processing' AND lease_until IS NOT NULL AND lease_until < ?
-    `).run(now, now);
-    if (result.changes > 0) {
-      console.log(`[ReportWorker] ${result.changes} job(s) con lease vencida liberados para reintento.`);
-    }
-  } catch (e) {
-    console.warn('[ReportWorker] Error liberando leases vencidas:', e.message);
-  }
-}
-
-// Reclamar atómicamente un job pendiente
-function claimNextJob() {
-  const now = Date.now();
-  const job = db.prepare(`
-    SELECT session_id, report_version, attempts FROM report_jobs
-    WHERE status = 'pending' AND next_attempt_at <= ?
-    ORDER BY next_attempt_at ASC
-    LIMIT 1
-  `).get(now);
-
-  if (!job) return null;
-
-  const leaseUntil = now + LEASE_DURATION_MS;
-  const updated = db.prepare(`
-    UPDATE report_jobs
-    SET status = 'processing', lease_until = ?
-    WHERE session_id = ? AND report_version = ? AND status = 'pending'
-  `).run(leaseUntil, job.session_id, job.report_version);
-
-  if (updated.changes === 0) return null;
-  return job;
-}
-
-// Generador de texto para publicación en redes / dashboard
-function generatePostText(summary) {
-  const durationSec = summary.duration_seconds || 0;
-  const h = Math.floor(durationSec / 3600);
-  const m = Math.floor((durationSec % 3600) / 60);
-  const durStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
-
-  const avgStr = (summary.avg_viewers !== null && summary.avg_viewers !== undefined)
-    ? Number(summary.avg_viewers).toLocaleString()
-    : 'Cobertura insuficiente';
-
+function generatePostText(s) {
+  const n = v => v == null ? 'Cobertura insuficiente' : Number(v).toLocaleString('es-ES');
+  const t = Math.max(0, s.duration_seconds || 0);
   return [
-    `📊 REPORTE DE EMISIÓN — ${summary.slug?.toUpperCase()} (${summary.platform?.toUpperCase()})`,
-    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-    `🎯 Título: ${summary.title || 'Sin título'}`,
-    `🏷️ Categoría: ${summary.category || 'General'}`,
-    `⏱️ Duración: ${durStr}`,
-    `🔥 Pico de viewers: ${Number(summary.peak_viewers || 0).toLocaleString()}`,
-    `📈 Media de viewers: ${avgStr}`,
-    `💬 Mensajes en chat: ${Number(summary.total_messages || 0).toLocaleString()}`,
-    `👥 Participantes únicos: ${Number(summary.unique_chatters || 0).toLocaleString()}`,
-    `📡 Cobertura técnica: ${((summary.coverage_ratio || 0) * 100).toFixed(1)}%`
+    `REPORTE DE EMISIÓN — ${s.slug.toUpperCase()} (${s.platform.toUpperCase()})`,
+    `Título: ${s.title || 'Sin título'}`, `Categoría: ${s.category || 'General'}`,
+    `Duración: ${Math.floor(t/3600)}h ${Math.floor(t%3600/60)}m`,
+    `Pico de viewers: ${n(s.peak_viewers)}`, `Media final observada: ${n(s.avg_viewers)}`,
+    `Horas vistas observadas: ${n(Math.round(s.observed_viewer_hours*10)/10)}`,
+    `Mensajes registrados: ${n(s.total_messages)}`, `Cuentas únicas que comentaron: ${n(s.unique_chatters)}`,
+    `Cobertura de audiencia: ${((s.coverage_ratio ?? 0)*100).toFixed(1)}%`,
+    'Media ponderada por tiempo. Audiencia concurrente; no son espectadores únicos.',
+    'Los recuentos de chat corresponden a mensajes recibidos; no demuestran uso de bots.'
   ].join('\n');
 }
-
-// Validador de contenido PNG: comprueba firma de 8 bytes, bloque IHDR y dimensiones positivas
-function validatePngContent(pngPath) {
-  if (!pngPath || !fs.existsSync(pngPath)) return false;
-  try {
-    const buf = fs.readFileSync(pngPath);
-    // Firma PNG estándar (8 bytes): 89 50 4E 47 0D 0A 1A 0A
-    if (buf.length < 24) return false;
-    const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 &&
-                  buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A;
-    if (!isPng) return false;
-
-    // Bloque IHDR: longitud (4 bytes en 8), tipo en 12..16 ('IHDR')
-    const chunkType = buf.toString('ascii', 12, 16);
-    if (chunkType !== 'IHDR') return false;
-
-    const width = buf.readUInt32BE(16);
-    const height = buf.readUInt32BE(20);
-    return width > 0 && height > 0;
-  } catch (e) {
-    return false;
+function createReportWorker({ db, outputDir, render = renderReport, renderOptions = {}, now = Date.now,
+  leaseMs = 120000, pollMs = 30000, logger = console } = {}) {
+  if (!db) throw new Error('Se necesita una base de datos para el trabajador');
+  if (!db.pragma('table_info(report_jobs)').some(c => c.name === 'lease_owner')) db.exec('ALTER TABLE report_jobs ADD COLUMN lease_owner TEXT');
+  const directory = () => { const d = outputDir || getOutputDir(); fs.mkdirSync(d,{recursive:true}); return d; };
+  let timer = null, cycle = null;
+  function releaseExpiredLeases() {
+    db.prepare(`UPDATE report_jobs SET status='pending_render',lease_until=NULL,lease_owner=NULL,next_attempt_at=?
+      WHERE status='processing' AND lease_until<=?`).run(now(),now());
   }
-}
-
-// Validador de contenido MP4: comprueba estructura del contenedor ftyp y ejecuta ffprobe si está instalado
-function validateMp4Content(mp4Path) {
-  if (!mp4Path || !fs.existsSync(mp4Path)) return false;
-  try {
-    const buf = fs.readFileSync(mp4Path);
-    if (buf.length < 32) return false;
-
-    // Caja ftyp obligatoria en bytes 4..8
-    const ftyp = buf.toString('ascii', 4, 8);
-    if (ftyp !== 'ftyp') return false;
-
-    // Si ffprobe está disponible en el entorno, validar pista de vídeo y decodificación completa
-    try {
-      execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of default=noprint_wrappers=1 "${mp4Path}"`, { stdio: 'pipe' });
-      execSync(`ffmpeg -v error -i "${mp4Path}" -f null -`, { stdio: 'pipe' });
-    } catch (toolErr) {
-      // Si ffprobe o ffmpeg no están instalados en el sistema operativo, la validación estructural ftyp es la base
-    }
-
-    return true;
-  } catch (e) {
-    return false;
+  const claimNextJob = db.transaction(() => {
+    const job = db.prepare(`SELECT * FROM report_jobs WHERE status IN ('pending','pending_render') AND next_attempt_at<=?
+      ORDER BY next_attempt_at,session_id LIMIT 1`).get(now());
+    if (!job) return null;
+    const owner = randomUUID();
+    db.prepare(`UPDATE report_jobs SET status='processing',lease_until=?,lease_owner=? WHERE session_id=? AND report_version=?`)
+      .run(now()+leaseMs,owner,job.session_id,job.report_version);
+    return {...job,lease_owner:owner};
+  });
+  function owns(job) {
+    return !job.lease_owner || Boolean(db.prepare(`SELECT 1 FROM report_jobs WHERE session_id=? AND report_version=?
+      AND status='processing' AND lease_owner=?`).get(job.session_id,job.report_version,job.lease_owner));
   }
-}
-
-// Generar el reporte para una sesión finalizada
-async function processJob(job) {
-  const { session_id } = job;
-  const outDir = getOutputDir();
-
-  // Leer datos finales de la sesión desde SQLite
-  const stream = db.prepare(`SELECT * FROM streams WHERE id = ?`).get(session_id);
-  if (!stream) {
-    throw new Error(`Sesión ${session_id} no encontrada en DB`);
-  }
-
-  const samples = db.prepare(`
-    SELECT timestamp, viewers FROM audience_samples
-    WHERE stream_id = ? ORDER BY timestamp ASC
-  `).all(session_id);
-
-  const gaps = db.prepare(`
-    SELECT started_at, ended_at, reason FROM capture_gaps WHERE stream_id = ?
-  `).all(session_id);
-
-  const chat = db.prepare(`
-    SELECT COUNT(*) AS total_messages, COUNT(DISTINCT sender_id) AS unique_chatters
-    FROM chat_messages WHERE stream_id = ?
-  `).get(session_id);
-
-  // Construir resumen JSON final
-  const summary = {
-    session_id,
-    platform: stream.platform,
-    slug: stream.slug,
-    title: stream.title,
-    category: stream.category,
-    started_at: stream.started_at,
-    ended_at: stream.ended_at,
-    duration_seconds: stream.ended_at ? Math.round((stream.ended_at - stream.started_at) / 1000) : null,
-    peak_viewers: stream.peak_viewers,
-    avg_viewers: stream.avg_viewers,
-    coverage_ratio: stream.coverage_ratio,
-    coverage_insufficient: stream.avg_viewers === null,
-    total_samples: samples.length,
-    gaps_count: gaps.length,
-    total_messages: chat?.total_messages || 0,
-    unique_chatters: chat?.unique_chatters || 0,
-    generated_at: Date.now()
-  };
-
-  const baseFileName = session_id.replace(/[:/]/g, '_');
-  const tmpPath = path.join(outDir, `${baseFileName}_report.tmp.json`);
-  const finalPath = path.join(outDir, `${baseFileName}_report.json`);
-  const postPath = path.join(outDir, `${baseFileName}_post.txt`);
-
-  // 1. Escribir resumen JSON de manera atómica (tmp -> rename tras validar)
-  fs.writeFileSync(tmpPath, JSON.stringify(summary, null, 2), 'utf8');
-  JSON.parse(fs.readFileSync(tmpPath, 'utf8')); // Validar parseabilidad
-  fs.renameSync(tmpPath, finalPath);
-
-  // 2. Generar el texto formateado del post
-  const postText = generatePostText(summary);
-  fs.writeFileSync(postPath, postText, 'utf8');
-
-  console.log(`[ReportWorker] ✅ Datos agregados para sesión: ${baseFileName}`);
-  console.log(`[ReportWorker]    ${stream.slug} | ${stream.platform} | pico: ${stream.peak_viewers} | media: ${stream.avg_viewers ?? 'N/D'} | cobertura: ${((stream.coverage_ratio || 0) * 100).toFixed(1)}%`);
-
-  // 3. Comprobar si existen archivos de imagen y vídeo renderizados reales y válidos
-  const pngPath = path.join(outDir, `${baseFileName}_summary.png`);
-  const mp4Path = path.join(outDir, `${baseFileName}_replay.mp4`);
-
-  const hasValidPng = validatePngContent(pngPath);
-  const hasValidMp4 = validateMp4Content(mp4Path);
-
-  if (!hasValidPng || !hasValidMp4) {
-    // Si el motor de renderizado Canvas/FFmpeg no ha generado archivos válidos todavía:
-    // NO se crean archivos simulados (stubs). Se marca como 'pending_render' hasta que se procese.
-    return {
-      status: 'pending_render',
-      finalPath,
-      postPath,
-      missingMedia: { png: !hasValidPng, mp4: !hasValidMp4 },
-      summary
+  async function processJob(job) {
+    const stream = db.prepare('SELECT * FROM streams WHERE id=?').get(job.session_id);
+    if (!stream || stream.status !== 'ended' || stream.ended_at == null) throw new Error('El informe requiere una sesión cerrada');
+    const samples = db.prepare('SELECT timestamp,viewers FROM audience_samples WHERE stream_id=? ORDER BY timestamp,id').all(job.session_id);
+    const gaps = db.prepare('SELECT started_at,ended_at,reason FROM capture_gaps WHERE stream_id=?').all(job.session_id);
+    const chat = db.prepare('SELECT COUNT(*) AS messages,COUNT(DISTINCT sender_id) AS accounts FROM chat_messages WHERE stream_id=?').get(job.session_id);
+    const metrics = calculateObservedStats(samples,gaps);
+    const summary = {
+      session_id:stream.id,report_version:job.report_version,platform:stream.platform,slug:stream.slug,title:stream.title,category:stream.category,
+      started_at:stream.started_at,ended_at:stream.ended_at,duration_seconds:Math.max(0,(stream.ended_at-stream.started_at)/1000),
+      peak_viewers:stream.peak_viewers,avg_viewers:stream.avg_viewers,coverage_ratio:stream.coverage_ratio,
+      coverage_insufficient:stream.avg_viewers==null,observed_seconds:metrics.observedSeconds,observed_viewer_hours:metrics.observedViewerHours,
+      total_samples:samples.length,gaps_count:gaps.length,total_messages:chat.messages,unique_chatters:chat.accounts,generated_at:now()
     };
-  }
-
-  return {
-    status: 'done',
-    finalPath,
-    postPath,
-    pngPath,
-    mp4Path,
-    summary
-  };
-}
-
-// Marcar job como pendiente de renderizado (datos agregados pero sin medios renderizados aún)
-function markPendingRender(job, output) {
-  db.prepare(`
-    UPDATE report_jobs SET status = 'pending_render', lease_until = NULL, last_error = NULL
-    WHERE session_id = ? AND report_version = ?
-  `).run(job.session_id, job.report_version);
-  console.log(`[ReportWorker] ⏳ Sesión ${job.session_id}: JSON y post listos. Estado fijado a 'pending_render'.`);
-}
-
-// Marcar job completado tras validación íntegra de todos los entregables
-function markDone(job, output) {
-  db.prepare(`
-    UPDATE report_jobs SET status = 'done', lease_until = NULL, last_error = NULL
-    WHERE session_id = ? AND report_version = ?
-  `).run(job.session_id, job.report_version);
-  console.log(`[ReportWorker] 🏆 Sesión ${job.session_id}: Todos los archivos validados. Estado fijado a 'done'.`);
-}
-
-// Marcar job fallido (con reintento o permanente)
-function markFailed(job, err) {
-  const attempts = (job.attempts || 0) + 1;
-  if (attempts >= MAX_ATTEMPTS) {
-    db.prepare(`
-      UPDATE report_jobs
-      SET status = 'failed', attempts = ?, lease_until = NULL, last_error = ?
-      WHERE session_id = ? AND report_version = ?
-    `).run(attempts, String(err.message).slice(0, 500), job.session_id, job.report_version);
-    console.error(`[ReportWorker] ❌ Job permanentemente fallido (${attempts} intentos): ${job.session_id} — ${err.message}`);
-  } else {
-    // Backoff exponencial: 1min, 2min, 4min, 8min...
-    const backoffMs = Math.min(60_000 * Math.pow(2, attempts - 1), 30 * 60_000);
-    const nextAttemptAt = Date.now() + backoffMs;
-    db.prepare(`
-      UPDATE report_jobs
-      SET status = 'pending', attempts = ?, lease_until = NULL, next_attempt_at = ?, last_error = ?
-      WHERE session_id = ? AND report_version = ?
-    `).run(attempts, nextAttemptAt, String(err.message).slice(0, 500), job.session_id, job.report_version);
-    console.warn(`[ReportWorker] ⚠️ Reintento ${attempts}/${MAX_ATTEMPTS} en ${Math.round(backoffMs / 1000)}s: ${job.session_id}`);
-  }
-}
-
-// Ciclo de procesamiento
-async function runWorkerCycle() {
-  // Liberar leases vencidas en cada ciclo
-  releaseExpiredLeases();
-
-  let job = claimNextJob();
-  while (job) {
+    const base = stream.id.replace(/[^a-zA-Z0-9_-]/g,'_')+(job.report_version===1?'':`_v${job.report_version}`);
+    const destination=directory(), staging=fs.mkdtempSync(path.join(destination,'.render-'));
     try {
-      const output = await processJob(job);
-      if (output.status === 'pending_render') {
-        markPendingRender(job, output);
-      } else {
-        markDone(job, output);
+      fs.writeFileSync(path.join(staging,'report.json'),JSON.stringify(summary,null,2));
+      fs.writeFileSync(path.join(staging,'post.txt'),generatePostText(summary));
+      const media=await render({stream,samples,gaps,summary,outputDir:staging},renderOptions);
+      if (!validatePngContent(media.pngPath,media.expected)) throw new Error('PNG incompleto o no decodificable');
+      const video=await inspectMp4(media.mp4Path,media.expected);
+      if (!owns(job)) throw new Error('La reserva cambió; no se publican sus archivos');
+      const files={pngPath:[media.pngPath,`${base}_summary.png`],mp4Path:[media.mp4Path,`${base}_replay.mp4`],
+        postPath:[path.join(staging,'post.txt'),`${base}_post.txt`],
+        ...(media.tracePath?{tracePath:[media.tracePath,`${base}_frames.json`]}:{}),
+        finalPath:[path.join(staging,'report.json'),`${base}_report.json`]};
+      const output={status:'done',summary,video};
+      // JSON is published last. Incomplete publication remains retriable, never done.
+      for (const [key,[source,name]] of Object.entries(files)) {output[key]=path.join(destination,name);fs.renameSync(source,output[key]);}
+      return output;
+    } finally {
+      // Owned staging directory: never delete an arbitrary supplied path.
+      const owned=path.resolve(staging);
+      if(path.dirname(owned)!==path.resolve(destination)||!path.basename(owned).startsWith('.render-')) {
+        throw new Error('Directorio temporal fuera de la carpeta de informes');
       }
-    } catch (err) {
-      console.error(`[ReportWorker] Error procesando job ${job.session_id}:`, err.message);
-      markFailed(job, err);
+      fs.rmSync(owned,{recursive:true,force:true});
     }
-    job = claimNextJob();
   }
+  async function processCycle() {
+    releaseExpiredLeases(); let job;
+    while ((job=claimNextJob())) {
+      const heartbeat=setInterval(()=>{
+        try {db.prepare(`UPDATE report_jobs SET lease_until=? WHERE session_id=? AND report_version=? AND status='processing' AND lease_owner=?`)
+          .run(now()+leaseMs,job.session_id,job.report_version,job.lease_owner);}
+        catch(e){logger.error('[ReportWorker] Reserva:',e.message);}
+      },Math.max(10,Math.floor(leaseMs/3)));
+      try {
+        await processJob(job);
+        db.prepare(`UPDATE report_jobs SET status='done',lease_until=NULL,lease_owner=NULL,last_error=NULL
+          WHERE session_id=? AND report_version=? AND lease_owner=?`).run(job.session_id,job.report_version,job.lease_owner);
+        logger.log(`[ReportWorker] Post, PNG y MP4 validados: ${job.session_id}`);
+      } catch(err) {
+        const attempts=job.attempts+1;
+        db.prepare(`UPDATE report_jobs SET status=?,attempts=?,next_attempt_at=?,last_error=?,lease_until=NULL,lease_owner=NULL
+          WHERE session_id=? AND report_version=? AND lease_owner=?`).run(attempts>=5?'failed':'pending_render',attempts,
+          now()+Math.min(60000*2**(attempts-1),1800000),String(err.message).slice(0,2000),job.session_id,job.report_version,job.lease_owner);
+        logger.error(`[ReportWorker] Render pendiente/fallido: ${job.session_id}: ${err.message}`);
+      } finally {clearInterval(heartbeat);}
+    }
+  }
+  function runWorkerCycle() {if(cycle)return cycle;cycle=processCycle().finally(()=>{cycle=null;});return cycle;}
+  function startReportWorker() {
+    if(timer)return;
+    const tick=()=>runWorkerCycle().catch(e=>logger.error('[ReportWorker]',e.message));
+    timer=setInterval(tick,pollMs);tick();
+  }
+  async function stopReportWorker(){clearInterval(timer);timer=null;if(cycle)await cycle;}
+  return {processJob,runWorkerCycle,startReportWorker,stopReportWorker,releaseExpiredLeases};
 }
-
-let workerTimer = null;
-
-function startReportWorker() {
-  releaseExpiredLeases();
-
-  // Primer ciclo inmediato
-  runWorkerCycle().catch(e => console.error('[ReportWorker] Error en ciclo inicial:', e.message));
-
-  // Ciclos periódicos
-  workerTimer = setInterval(() => {
-    runWorkerCycle().catch(e => console.error('[ReportWorker] Error en ciclo periódico:', e.message));
-  }, POLL_INTERVAL_MS);
-
-  console.log('[ReportWorker] Iniciado — revisando cola cada 30s.');
-}
-
-function stopReportWorker() {
-  if (workerTimer) clearInterval(workerTimer);
-}
-
-module.exports = {
-  startReportWorker,
-  stopReportWorker,
-  processJob,
-  generatePostText,
-  validatePngContent,
-  validateMp4Content,
-  getOutputDir
-};
+let defaultWorker;
+const getWorker=()=>defaultWorker ||= createReportWorker({db:require('./db').db});
+module.exports={createReportWorker,generatePostText,getOutputDir,validatePngContent,validateMp4Content,
+  processJob:job=>getWorker().processJob(job),startReportWorker:()=>getWorker().startReportWorker(),stopReportWorker:()=>getWorker().stopReportWorker()};

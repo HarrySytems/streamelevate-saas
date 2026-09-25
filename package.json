@@ -4,12 +4,17 @@
   "description": "SaaS de Moderacion de Chat para Kick by Harry Systems",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test_engine_cases.js test/*.test.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "dotenv": "^18.0.3",
     "express": "^4.18.2",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "pngjs": "^7.0.0",
+    "puppeteer": "^25.12.0",
     "pusher-js": "^8.6.0",
     "socket.io": "^4.7.4"
   }

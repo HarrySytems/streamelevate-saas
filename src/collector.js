@@ -148,32 +148,44 @@ function subscribeChatroom(chatroomId, slug) {
   const channel = pusher.subscribe(channelName);
   memoryState.pusherSubscribed.set(chatroomId, channel);
 
-  channel.bind('App\\Events\\ChatMessageEvent', (data) => {
-    const now = Date.now();
-    const key = `kick_${slug.toLowerCase()}`;
-    const active = memoryState.activeStreams.get(key);
+  try {
+    channel.bind('App\\Events\\ChatMessageEvent', (data) => {
+      try {
+        const now = Date.now();
+        const key = `kick_${slug.toLowerCase()}`;
+        const active = memoryState.activeStreams.get(key);
 
-    recordChat({
-      message_id: data.id || `kick_${now}_${Math.random().toString(36).slice(2, 7)}`,
-      stream_id: active ? active.id : null,
-      platform: 'kick',
-      slug: slug.toLowerCase(),
-      sender_id: String(data.sender?.id || ''),
-      sender_username: data.sender?.username || 'Anónimo',
-      content: data.content || '',
-      timestamp: Date.parse(data.created_at) || now
+        recordChat({
+          message_id: data?.id || `kick_${now}_${Math.random().toString(36).slice(2, 7)}`,
+          stream_id: active ? active.id : null,
+          platform: 'kick',
+          slug: slug.toLowerCase(),
+          sender_id: String(data?.sender?.id || ''),
+          sender_username: data?.sender?.username || 'Anónimo',
+          content: data?.content || '',
+          timestamp: (data?.created_at ? Date.parse(data.created_at) : now) || now
+        });
+
+        if (!memoryState.chatWindows.has(key)) {
+          memoryState.chatWindows.set(key, []);
+        }
+        const window = memoryState.chatWindows.get(key);
+        window.push({ t: now, senderId: data?.sender?.id });
+        
+        while (window.length > 0 && now - window[0].t > 60000) {
+          window.shift();
+        }
+      } catch (err) {
+        console.warn(`[StreamElevate Colector] Error procesando chat Kick (${slug}):`, err.message);
+      }
     });
 
-    if (!memoryState.chatWindows.has(key)) {
-      memoryState.chatWindows.set(key, []);
-    }
-    const window = memoryState.chatWindows.get(key);
-    window.push({ t: now, senderId: data.sender?.id });
-    
-    while (window.length > 0 && now - window[0].t > 60000) {
-      window.shift();
-    }
-  });
+    channel.bind('pusher:subscription_error', (status) => {
+      console.warn(`[StreamElevate Colector] Error suscripción Pusher (${channelName}):`, status);
+    });
+  } catch (err) {
+    console.warn(`[StreamElevate Colector] Error configurando canal Pusher (${channelName}):`, err.message);
+  }
 
   console.log(`[StreamElevate Colector] Suscrito a Kick Chat en vivo: ${slug} (${channelName})`);
 }
@@ -204,60 +216,64 @@ function initTwitchIrc() {
     };
 
     twitchWs.onmessage = (event) => {
-      const data = event.data.toString();
-      const lines = data.split('\r\n');
-      for (const line of lines) {
-        if (!line) continue;
-        if (line.startsWith('PING ')) {
-          twitchWs.send('PONG :tmi.twitch.tv\r\n');
-          continue;
-        }
+      try {
+        const data = event.data.toString();
+        const lines = data.split('\r\n');
+        for (const line of lines) {
+          if (!line) continue;
+          if (line.startsWith('PING ')) {
+            twitchWs.send('PONG :tmi.twitch.tv\r\n');
+            continue;
+          }
 
-        const idxPrivmsg = line.indexOf(' PRIVMSG ');
-        if (idxPrivmsg !== -1) {
-          const prefix = line.slice(0, idxPrivmsg);
-          const rest = line.slice(idxPrivmsg + 9);
-          const channel = rest.slice(0, rest.indexOf(' ')).replace('#', '').toLowerCase();
-          const text = rest.slice(rest.indexOf(' :') + 2);
+          const idxPrivmsg = line.indexOf(' PRIVMSG ');
+          if (idxPrivmsg !== -1) {
+            const prefix = line.slice(0, idxPrivmsg);
+            const rest = line.slice(idxPrivmsg + 9);
+            const channel = rest.slice(0, rest.indexOf(' ')).replace('#', '').toLowerCase();
+            const text = rest.slice(rest.indexOf(' :') + 2);
 
-          const tags = {};
-          if (prefix.startsWith('@')) {
-            const rawTags = prefix.slice(1, prefix.indexOf(' '));
-            for (const item of rawTags.split(';')) {
-              const eq = item.indexOf('=');
-              if (eq !== -1) tags[item.slice(0, eq)] = item.slice(eq + 1);
+            const tags = {};
+            if (prefix.startsWith('@')) {
+              const rawTags = prefix.slice(1, prefix.indexOf(' '));
+              for (const item of rawTags.split(';')) {
+                const eq = item.indexOf('=');
+                if (eq !== -1) tags[item.slice(0, eq)] = item.slice(eq + 1);
+              }
+            }
+
+            const now = Date.now();
+            const key = `twitch_${channel}`;
+            const active = memoryState.activeStreams.get(key);
+
+            const msgId = tags['id'] || `twitch_${now}_${Math.random().toString(36).slice(2, 7)}`;
+            const senderId = tags['user-id'] || '';
+            const senderUsername = tags['display-name'] || 'Anónimo';
+
+            recordChat({
+              message_id: msgId,
+              stream_id: active ? active.id : null,
+              platform: 'twitch',
+              slug: channel,
+              sender_id: String(senderId),
+              sender_username: senderUsername,
+              content: text || '',
+              timestamp: now
+            });
+
+            if (!memoryState.chatWindows.has(key)) {
+              memoryState.chatWindows.set(key, []);
+            }
+            const window = memoryState.chatWindows.get(key);
+            window.push({ t: now, senderId });
+
+            while (window.length > 0 && now - window[0].t > 60000) {
+              window.shift();
             }
           }
-
-          const now = Date.now();
-          const key = `twitch_${channel}`;
-          const active = memoryState.activeStreams.get(key);
-
-          const msgId = tags['id'] || `twitch_${now}_${Math.random().toString(36).slice(2, 7)}`;
-          const senderId = tags['user-id'] || '';
-          const senderUsername = tags['display-name'] || 'Anónimo';
-
-          recordChat({
-            message_id: msgId,
-            stream_id: active ? active.id : null,
-            platform: 'twitch',
-            slug: channel,
-            sender_id: String(senderId),
-            sender_username: senderUsername,
-            content: text || '',
-            timestamp: now
-          });
-
-          if (!memoryState.chatWindows.has(key)) {
-            memoryState.chatWindows.set(key, []);
-          }
-          const window = memoryState.chatWindows.get(key);
-          window.push({ t: now, senderId });
-
-          while (window.length > 0 && now - window[0].t > 60000) {
-            window.shift();
-          }
         }
+      } catch (err) {
+        console.warn('[StreamElevate Colector] Error procesando mensaje Twitch IRC:', err.message);
       }
     };
 

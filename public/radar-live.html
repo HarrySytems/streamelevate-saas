@@ -376,17 +376,27 @@
 
     async function startReplay() {
       // Cargar resumen final antes de reproducir para fijar media desde el principio
-      if (currentStreamerData?.stream_id && currentStreamerData?.avg_viewers === undefined) {
+      if (!currentStreamerData?.stream_id) return;
+      const replaySessionId = currentStreamerData.stream_id;
+      {
         try {
-          const slug = currentStreamerSlug || currentStreamerData?.slug;
-          const sessRes = await fetch(`/api/v1/streamers/${slug}/session/${currentStreamerData.stream_id}`);
-          if (sessRes.ok) {
-            const sessData = await sessRes.json();
-            if (sessData.stream && sessData.stream.avg_viewers !== undefined) {
-              currentStreamerData.avg_viewers = sessData.stream.avg_viewers;
-            }
+          const slug = currentStreamerData.slug || currentSlug;
+          const sessRes = await fetch(`/api/v1/streamers/${encodeURIComponent(slug)}/session/${encodeURIComponent(replaySessionId)}`);
+          if (!sessRes.ok) throw new Error('No se pudo cargar el resumen');
+          const sessData = await sessRes.json();
+          if (currentStreamerData?.stream_id !== replaySessionId) return;
+          if (!sessData.stream || sessData.stream.status !== 'ended') {
+            throw new Error('La media final estará disponible al terminar la emisión');
           }
-        } catch (e) {}
+          const avg = sessData.stream.avg_viewers;
+          if (avg !== null && (typeof avg !== 'number' || !Number.isFinite(avg))) {
+            throw new Error('La media final recibida no es válida');
+          }
+          currentStreamerData.avg_viewers = avg;
+        } catch (e) {
+          document.getElementById('statusText').textContent = e.message;
+          return;
+        }
       }
 
       setMode('replay');

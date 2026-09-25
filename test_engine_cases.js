@@ -195,117 +195,67 @@ test('calculateObservedStats: 0 muestras → null', () => {
 // BLOQUE 3 — integración real de Base de Datos y Worker (Aislado al 100%)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-test('integración DB y Worker: ciclo completo aislado (SQLite en memoria y carpeta temporal)', async () => {
-  const os = require('node:os');
-  const fs = require('node:fs');
-
-  // Inyectar DB en memoria y carpeta de reportes temporal aislada
+test('integración: render real, validación completa y recuperación de cola', async () => {
+  const fs = require('node:fs'), os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'streamelevate-render-test-'));
   process.env.TEST_DB_PATH = ':memory:';
-  const testReportsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'streamelevate-reports-test-'));
-  process.env.TEST_REPORTS_DIR = testReportsDir;
-
-  const dbModule = require('./src/db');
-  const { db, getSessionChart, closeAndEnqueue } = dbModule;
-  const workerModule = require('./src/report-worker');
-  const { processJob, validatePngContent, validateMp4Content, generatePostText } = workerModule;
-
+  process.env.TEST_REPORTS_DIR = dir;
+  const { db, getSessionChart, closeAndEnqueue } = require('./src/db');
+  const { createReportWorker, validatePngContent, validateMp4Content } = require('./src/report-worker');
+  const quiet = { log(){}, error(){} };
   try {
-    // --- 1. getSessionChart ---
-    const streamId = 'kick:ibai:bcast001';
-    db.prepare(`
-      INSERT INTO streams (id, broadcast_id, platform, slug, started_at, status)
-      VALUES (?, 'bcast001', 'kick', 'ibai', 1000, 'live')
-    `).run(streamId);
+    const id = 'kick:qa:session'; const base = 1700000000000;
+    db.prepare(`INSERT INTO streams (id,broadcast_id,platform,slug,title,started_at,peak_viewers,status)
+      VALUES (?,'qa-id','kick','Prueba aislada','Validación de render',?,1090,'live')`).run(id,base);
+    for(let i=0;i<10;i++)db.prepare('INSERT INTO audience_samples (stream_id,platform,slug,timestamp,viewers) VALUES (?,\'kick\',\'qa\',?,?)')
+      .run(id,base+i*30000,1000+i*10);
+    assert.equal(getSessionChart(id).totalSamples,10);
+    closeAndEnqueue(id,()=>db.prepare("UPDATE streams SET status='ended',ended_at=?,avg_viewers=1045,coverage_ratio=1 WHERE id=?").run(base+270000,id));
+    db.prepare("UPDATE report_jobs SET status='pending_render' WHERE session_id=?").run(id);
+    const worker = createReportWorker({db,outputDir:dir,logger:quiet});
+    // Real queue, renderer, Chromium and FFmpeg; no fake media or mocked production logic.
+    await worker.runWorkerCycle();
+    const job=db.prepare('SELECT * FROM report_jobs WHERE session_id=?').get(id);
+    assert.equal(job.status,'done',job.last_error);
+    const png=path.join(dir,'kick_qa_session_summary.png'),mp4=path.join(dir,'kick_qa_session_replay.mp4');
+    assert.equal(validatePngContent(png,{width:1280,height:720}),true);
+    assert.equal(await validateMp4Content(mp4,{width:1280,height:720,frames:480,seconds:8}),true);
+    const trace=JSON.parse(fs.readFileSync(path.join(dir,'kick_qa_session_frames.json'),'utf8'));
+    assert.equal(trace.length,480);
+    assert.ok(trace.every(f=>f.average===1045));
+    assert.equal(trace[0].progress,0);
+    assert.equal(trace.at(-1).progress,1);
+    assert.equal(trace.at(-1).tracerX,trace.at(-1).chartRight);
+    const before=fs.statSync(mp4).mtimeMs;
+    await worker.runWorkerCycle();
+    assert.equal(fs.statSync(mp4).mtimeMs,before,'done jobs must not render twice');
 
-    const base = Date.now();
-    for (let i = 0; i < 10; i++) {
-      db.prepare(`
-        INSERT INTO audience_samples (stream_id, platform, slug, timestamp, viewers, category)
-        VALUES (?, 'kick', 'ibai', ?, ?, 'Gaming')
-      `).run(streamId, base + i * 30_000, 1000 + i * 10);
-    }
+    // Reject header-only and genuinely truncated files, even when magic bytes are correct.
+    const badPng=path.join(dir,'bad.png');fs.writeFileSync(badPng,fs.readFileSync(png).subarray(0,24));
+    assert.equal(validatePngContent(badPng),false);
+    const badMp4=path.join(dir,'bad.mp4');const header=Buffer.alloc(32);header.write('ftyp',4);fs.writeFileSync(badMp4,header);
+    assert.equal(await validateMp4Content(badMp4),false);
+    fs.writeFileSync(badMp4,fs.readFileSync(mp4).subarray(0,256));
+    assert.equal(await validateMp4Content(badMp4),false);
+    const old=process.env.FFPROBE_PATH;process.env.FFPROBE_PATH=path.join(dir,'missing-tool');
+    try {assert.equal(await validateMp4Content(mp4),false);}finally{if(old)process.env.FFPROBE_PATH=old;else delete process.env.FFPROBE_PATH;}
 
-    const chart = getSessionChart(streamId);
-    assert.equal(chart.totalSamples, 10, 'getSessionChart debe contar 10 muestras reales');
-    assert.equal(chart.gaps.length, 0, 'sin huecos registrados');
-    assert.ok(chart.firstObservedAt !== null, 'debe tener primer timestamp');
-
-    // --- 2. closeAndEnqueue con avg_viewers = NULL ---
-    closeAndEnqueue(streamId, () => {
-      db.prepare("UPDATE streams SET status = 'ended', ended_at = ?, avg_viewers = NULL, coverage_ratio = 0.05 WHERE id = ?").run(base + 300_000, streamId);
-    });
-
-    const job = db.prepare(`SELECT * FROM report_jobs WHERE session_id = ?`).get(streamId);
-    assert.ok(job, 'el job debe encolarse automáticamente');
-    assert.equal(job.status, 'pending', 'debe encolarse como pending');
-
-    // --- 3. Procesamiento en Worker sin motor de renderizado conectado ---
-    const output = await processJob(job);
-    
-    // Validar aislamiento de carpeta: se escribió en testReportsDir, NO en data/reports
-    assert.ok(output.finalPath.startsWith(testReportsDir), 'el JSON debe escribirse en la carpeta aislada de test');
-    assert.ok(fs.existsSync(output.finalPath), 'el JSON final debe existir');
-    assert.ok(fs.existsSync(output.postPath), 'el archivo post.txt debe existir');
-
-    const reportJson = JSON.parse(fs.readFileSync(output.finalPath, 'utf8'));
-    assert.equal(reportJson.coverage_insufficient, true, 'el reporte JSON debe reflejar coverage_insufficient=true (por null)');
-    assert.equal(reportJson.total_samples, 10, 'el reporte debe incluir total_samples correctas');
-
-    const postContent = fs.readFileSync(output.postPath, 'utf8');
-    assert.ok(postContent.includes('REPORTE DE EMISIÓN'), 'post.txt debe tener encabezado formateado');
-    assert.ok(postContent.includes('Cobertura insuficiente'), 'post.txt debe indicar cobertura insuficiente cuando avg es null');
-
-    // Comprobar que NO se crearon stubs falsos y que el estado es 'pending_render'
-    assert.equal(output.status, 'pending_render', 'sin renderizador, el trabajo debe quedar en pending_render (no done)');
-    const fakePng = path.join(testReportsDir, 'kick_ibai_bcast001_summary.png');
-    const fakeMp4 = path.join(testReportsDir, 'kick_ibai_bcast001_replay.mp4');
-    assert.equal(fs.existsSync(fakePng), false, 'NO deben crearse PNGs simulados falsos en producción');
-    assert.equal(fs.existsSync(fakeMp4), false, 'NO deben crearse MP4s simulados falsos en producción');
-
-    // --- 4. Prueba rigurosa de validadores de contenido multimedia ---
-    // A) Rechazar archivos no válidos o con texto falso
-    const corruptFile = path.join(testReportsDir, 'corrupt.png');
-    fs.writeFileSync(corruptFile, 'STUB_PNG_CONTENT');
-    assert.equal(validatePngContent(corruptFile), false, 'validatePngContent debe rechazar stubs falsos de texto');
-
-    const corruptMp4 = path.join(testReportsDir, 'corrupt.mp4');
-    fs.writeFileSync(corruptMp4, 'STUB_MP4_CONTENT');
-    assert.equal(validateMp4Content(corruptMp4), false, 'validateMp4Content debe rechazar stubs falsos de texto');
-
-    // B) Aceptar archivo PNG 100% auténtico y decodificable (1x1 píxel estándar con firma e IHDR)
-    const validPngBytes = Buffer.from(
-      '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000000020001e221bc330000000049454e44ae426082',
-      'hex'
-    );
-    const validPngFile = path.join(testReportsDir, 'valid.png');
-    fs.writeFileSync(validPngFile, validPngBytes);
-    assert.equal(validatePngContent(validPngFile), true, 'validatePngContent debe aceptar un PNG binario auténtico con IHDR válido');
-
-    // C) Aceptar contenedor MP4 con caja ftyp válida
-    const validMp4Box = Buffer.concat([
-      Buffer.from([0x00, 0x00, 0x00, 0x20]), // tamaño de la caja (32 bytes)
-      Buffer.from('ftypisom', 'ascii'),     // tipo ftyp + compatible isom
-      Buffer.from([0x00, 0x00, 0x02, 0x00]), // versión menor
-      Buffer.from('isomiso2avc1mp41', 'ascii') // marcas compatibles
-    ]);
-    const validMp4File = path.join(testReportsDir, 'valid.mp4');
-    fs.writeFileSync(validMp4File, validMp4Box);
-    assert.equal(validateMp4Content(validMp4File), true, 'validateMp4Content debe validar estructura ftyp de MP4');
-
-    // --- 5. Validar que con medios auténticos presentes, processJob transiciona a 'done' ---
-    fs.writeFileSync(fakePng, validPngBytes);
-    fs.writeFileSync(fakeMp4, validMp4Box);
-    const doneOutput = await processJob(job);
-    assert.equal(doneOutput.status, 'done', 'cuando los medios auténticos existen y son válidos, processJob retorna done');
-    assert.ok(fs.existsSync(doneOutput.pngPath), 'PNG validado debe existir');
-    assert.ok(fs.existsSync(doneOutput.mp4Path), 'MP4 validado debe existir');
-
+    // Exercise real lease reclamation and retry code, injecting only the external renderer failure.
+    let clock=1000,calls=0;
+    db.prepare("UPDATE report_jobs SET status='processing',lease_owner='crashed',lease_until=2000,next_attempt_at=0 WHERE session_id=?").run(id);
+    const recovery=createReportWorker({db,outputDir:dir,now:()=>clock,logger:quiet,render:async()=>{calls++;throw Error('encoder unavailable');}});
+    await recovery.runWorkerCycle();assert.equal(calls,0,'unexpired reservation must remain owned');
+    clock=2001;await recovery.runWorkerCycle();assert.equal(calls,1);
+    const retry=db.prepare('SELECT * FROM report_jobs WHERE session_id=?').get(id);
+    assert.equal(retry.status,'pending_render');assert.equal(retry.attempts,1);assert.ok(retry.next_attempt_at>clock);
+    await recovery.runWorkerCycle();assert.equal(calls,1,'backoff must be respected');
+    assert.equal(fs.statSync(mp4).mtimeMs,before,'failed render must not overwrite valid output');
+    assert.ok(!fs.readdirSync(dir).some(n=>n.startsWith('.render-')));
   } finally {
-    // Limpieza completa del directorio temporal aislado
-    try {
-      fs.rmSync(testReportsDir, { recursive: true, force: true });
-    } catch (e) {}
+    db.close();
+    const resolved=path.resolve(dir);
+    assert.equal(path.dirname(resolved),path.resolve(os.tmpdir()));
+    assert.ok(path.basename(resolved).startsWith('streamelevate-render-test-'));
+    fs.rmSync(resolved,{recursive:true,force:true});
   }
 });
-
-console.log('\n✅ Todos los tests ejecutaron contra código de producción real.\n');

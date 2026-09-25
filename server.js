@@ -1,4 +1,12 @@
 require('dotenv').config();
+
+process.on('uncaughtException', (err) => {
+    console.error('[StreamElevate PRO] ⚠️ Error no capturado (uncaughtException):', err?.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[StreamElevate PRO] ⚠️ Promesa rechazada no controlada (unhandledRejection):', reason?.stack || reason);
+});
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
