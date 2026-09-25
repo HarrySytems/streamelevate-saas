@@ -64,6 +64,19 @@ function loadStreamersDatabase() {
       all.forEach(ch => {
         memoryState.channels.set(`${ch.platform}_${ch.slug.toLowerCase()}`, ch);
       });
+      // Sincronizar estado persistido de canales desde SQLite
+      try {
+        const savedChannels = stmts.getAllChannels.all();
+        savedChannels.forEach(ch => {
+          const key = `${ch.platform}_${ch.slug.toLowerCase()}`;
+          const existing = memoryState.channels.get(key);
+          if (existing) {
+            existing.initial_stream_handled = ch.initial_stream_handled || 0;
+          } else {
+            memoryState.channels.set(key, ch);
+          }
+        });
+      } catch (e) {}
 
       // Restaurar streams activos desde SQLite si el proceso se reinició
       try {
@@ -92,6 +105,7 @@ function loadStreamersDatabase() {
             viewers: row.peak_viewers || 0,
             category: row.category,
             title: row.title,
+            ignoreReports: Boolean(row.ignore_reports),
             recentSamples: initialSamples
           });
           if (row.platform === 'twitch') {
@@ -413,8 +427,8 @@ function closeStreamSession(active) {
     // null = cobertura insuficiente.
     // NO sustituir por active.viewers: ese valor no es una media, es el último dato puntual.
 
-    // Cerrar sesión + encolar reporte en transacción atómica
-    closeAndEnqueue(active.id, () => {
+    if (active.ignoreReports) {
+      // Política de primera emisión completa: cerrar en BD pero OMITIR reporte
       stmts.closeStream.run({
         id: active.id,
         ended_at: finalEndedAt,
@@ -425,7 +439,22 @@ function closeStreamSession(active) {
         total_messages: stats?.total_messages || 0,
         unique_chatters: stats?.unique_chatters || 0
       });
-    });
+      console.log(`[StreamElevate Colector] Sesión ${active.id} (${active.slug}) cerrada sin reporte (política de primera emisión completa).`);
+    } else {
+      // Cerrar sesión + encolar reporte en transacción atómica
+      closeAndEnqueue(active.id, () => {
+        stmts.closeStream.run({
+          id: active.id,
+          ended_at: finalEndedAt,
+          avg_viewers: averageViewers !== null ? Math.round(averageViewers) : null,
+          coverage_ratio: Number(coverageRatio.toFixed(4)),
+          last_live_at: active.lastLiveAt || finalEndedAt,
+          first_offline_at: active.firstOfflineAt || active.offlineSince || finalEndedAt,
+          total_messages: stats?.total_messages || 0,
+          unique_chatters: stats?.unique_chatters || 0
+        });
+      });
+    }
 
     if (active.platform === 'kick' && active.chatroomId) {
       unsubscribeChatroom(active.chatroomId);
@@ -538,6 +567,22 @@ async function pollKickBatch(channels) {
         last_checked_at: now
       });
 
+      // Política de primera emisión completa post-limpieza
+      const chMeta = memoryState.channels.get(key);
+      const isFirstCheck = !chMeta || (chMeta.initial_stream_handled !== 1);
+      let ignoreReportsForNewSession = false;
+
+      if (isFirstCheck) {
+        if (isLive) {
+          ignoreReportsForNewSession = true;
+          console.log(`[StreamElevate Colector] [Política Primera Emisión] ${slug} (Kick) ya estaba en directo al iniciar. Se vigila telemetría pero se omitirá su informe final.`);
+        } else {
+          console.log(`[StreamElevate Colector] [Política Primera Emisión] ${slug} (Kick) confirmado offline. Queda listo para medir su próxima emisión completa.`);
+        }
+        if (chMeta) chMeta.initial_stream_handled = 1;
+        try { stmts.setInitialStreamHandled.run('kick', slug); } catch(e) {}
+      }
+
       if (isLive) {
         // Procesar acción de identidad
         if (sessionAction.action === 'close_and_create') {
@@ -559,6 +604,7 @@ async function pollKickBatch(channels) {
         const actualBroadcastId = active ? active.broadcastId : (sessionAction.session ? sessionAction.session.broadcastId : null);
 
         if (!active) {
+          const ignoreReportsVal = ignoreReportsForNewSession ? 1 : 0;
           stmts.createStream.run({
             id: effectiveStreamId,
             broadcast_id: actualBroadcastId,
@@ -568,7 +614,8 @@ async function pollKickBatch(channels) {
             category,
             started_at: realStartedAt,
             peak_viewers: viewers,
-            last_live_at: now
+            last_live_at: now,
+            ignore_reports: ignoreReportsVal
           });
           active = {
             id: effectiveStreamId,
@@ -583,7 +630,8 @@ async function pollKickBatch(channels) {
             category,
             title,
             avatarUrl,
-            chatroomId
+            chatroomId,
+            ignoreReports: Boolean(ignoreReportsVal)
           };
           memoryState.activeStreams.set(key, active);
           console.log(`[StreamElevate Colector] ¡STREAMER KICK EN DIRECTO! [Matrícula ${actualBroadcastId || 'Provisional'}]: ${slug} con ${viewers} viewers.`);
@@ -693,10 +741,16 @@ async function pollTwitchBatch(channels) {
     for (let i = 0; i < batchData.length; i++) {
       const item = batchData[i];
       const channel = channels[i];
+      if (!channel) continue;
       const slug = channel.slug.toLowerCase();
       const key = `twitch_${slug}`;
 
-      const user = item?.data?.user;
+      if (!item || !item.data) {
+        console.warn(`[StreamElevate Colector] Twitch GQL error para ${slug}: conservando estado pendiente.`);
+        continue;
+      }
+
+      const user = item.data.user;
       const stream = user?.stream;
       const isLive = Boolean(stream && stream.type === 'live');
       const viewers = isLive ? (Number(stream.viewersCount) || 0) : 0;
@@ -746,6 +800,22 @@ async function pollTwitchBatch(channels) {
         last_checked_at: now
       });
 
+      // Política de primera emisión completa post-limpieza
+      const chMeta = memoryState.channels.get(key);
+      const isFirstCheck = !chMeta || (chMeta.initial_stream_handled !== 1);
+      let ignoreReportsForNewSession = false;
+
+      if (isFirstCheck) {
+        if (isLive) {
+          ignoreReportsForNewSession = true;
+          console.log(`[StreamElevate Colector] [Política Primera Emisión] ${slug} (Twitch) ya estaba en directo al iniciar. Se vigila telemetría pero se omitirá su informe final.`);
+        } else {
+          console.log(`[StreamElevate Colector] [Política Primera Emisión] ${slug} (Twitch) confirmado offline. Queda listo para medir su próxima emisión completa.`);
+        }
+        if (chMeta) chMeta.initial_stream_handled = 1;
+        try { stmts.setInitialStreamHandled.run('twitch', slug); } catch(e) {}
+      }
+
       if (isLive) {
         // Procesar acción de identidad
         if (sessionAction.action === 'close_and_create') {
@@ -766,6 +836,7 @@ async function pollTwitchBatch(channels) {
         const actualBroadcastId = active ? active.broadcastId : (sessionAction.session ? sessionAction.session.broadcastId : null);
 
         if (!active) {
+          const ignoreReportsVal = ignoreReportsForNewSession ? 1 : 0;
           stmts.createStream.run({
             id: effectiveStreamId,
             broadcast_id: actualBroadcastId,
@@ -775,7 +846,8 @@ async function pollTwitchBatch(channels) {
             category,
             started_at: realStartedAt,
             peak_viewers: viewers,
-            last_live_at: now
+            last_live_at: now,
+            ignore_reports: ignoreReportsVal
           });
           active = {
             id: effectiveStreamId,
@@ -789,7 +861,8 @@ async function pollTwitchBatch(channels) {
             viewers,
             category,
             title,
-            avatarUrl
+            avatarUrl,
+            ignoreReports: Boolean(ignoreReportsVal)
           };
           memoryState.activeStreams.set(key, active);
           console.log(`[StreamElevate Colector] ¡TWITCH EN DIRECTO! [Matrícula ${actualBroadcastId || 'Provisional'}]: ${slug} con ${viewers} viewers.`);

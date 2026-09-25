@@ -137,6 +137,12 @@ function initDb() {
     db.exec(`ALTER TABLE streams ADD COLUMN coverage_ratio REAL DEFAULT 1.0;`);
   } catch (e) {}
   try {
+    db.exec(`ALTER TABLE streams ADD COLUMN ignore_reports INTEGER DEFAULT 0;`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE channels ADD COLUMN initial_stream_handled INTEGER DEFAULT 0;`);
+  } catch (e) {}
+  try {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_audience_samples_stream ON audience_samples(stream_id, timestamp);`);
   } catch (e) {}
 }
@@ -170,13 +176,21 @@ const stmts = {
 
   getChannelBySlug: db.prepare(`SELECT * FROM channels WHERE slug = ? LIMIT 1`),
 
+  setInitialStreamHandled: db.prepare(`
+    UPDATE channels SET initial_stream_handled = 1 WHERE platform = ? AND slug = ?
+  `),
+
+  getChannelHandled: db.prepare(`
+    SELECT initial_stream_handled FROM channels WHERE platform = ? AND slug = ?
+  `),
+
   getActiveStream: db.prepare(`
     SELECT * FROM streams WHERE platform = ? AND slug = ? AND status = 'live' ORDER BY started_at DESC LIMIT 1
   `),
 
   createStream: db.prepare(`
-    INSERT INTO streams (id, broadcast_id, platform, slug, title, category, started_at, peak_viewers, last_live_at, status)
-    VALUES (@id, @broadcast_id, @platform, @slug, @title, @category, @started_at, @peak_viewers, @last_live_at, 'live')
+    INSERT INTO streams (id, broadcast_id, platform, slug, title, category, started_at, peak_viewers, last_live_at, status, ignore_reports)
+    VALUES (@id, @broadcast_id, @platform, @slug, @title, @category, @started_at, @peak_viewers, @last_live_at, 'live', coalesce(@ignore_reports, 0))
     ON CONFLICT(id) DO UPDATE SET
       broadcast_id = coalesce(excluded.broadcast_id, streams.broadcast_id),
       title = coalesce(excluded.title, streams.title),
