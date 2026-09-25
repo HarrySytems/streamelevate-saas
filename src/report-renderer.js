@@ -6,6 +6,42 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { mediaPaths } = require('./media-tools');
 
+async function resolveStreamerAvatar(platform, slug) {
+  if (platform === 'kick') {
+    try {
+      const res = await fetch('https://kick.com/api/v1/channels/' + encodeURIComponent(slug), {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (res.ok) {
+        const d = await res.json();
+        return d?.user?.profile_pic || d?.user?.avatar || null;
+      }
+    } catch (e) {}
+  } else if (platform === 'twitch') {
+    try {
+      const queryStr = 'query($login: String!) { user(login: $login) { profileImageURL(width: 300) } }';
+      const res = await fetch('https://gql.twitch.tv/gql', {
+        method: 'POST',
+        headers: {
+          'Client-ID': 'kimne78kx3ncx6brgo4mv6wki5h1ko',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          query: queryStr,
+          variables: { login: slug }
+        }),
+        signal: AbortSignal.timeout(5000)
+      });
+      if (res.ok) {
+        const d = await res.json();
+        return d?.data?.user?.profileImageURL || null;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
 // Reuse the user's existing RadarStream design; no card/layout/style is redrawn here.
 async function renderReport({ stream, samples, gaps, summary, outputDir }, options = {}) {
   const fps = options.fps ?? 60;
@@ -34,8 +70,12 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
     await page.emulateTimezone(process.env.RADAR_TIMEZONE || 'America/Lima');
     const html = fs.readFileSync(path.join(__dirname, '../public/radar-live.html'), 'utf8');
     await page.setContent(html.replace('<head>', '<head><script>window.__RADAR_EXPORT__=true;</script>'));
-        let avatarData = null;
-    const avatarUrl = stream.avatar_url || stream.avatar;
+
+    let avatarData = null;
+    let avatarUrl = stream.avatar_url || stream.avatar;
+    if (!avatarUrl && stream.slug && stream.platform) {
+      avatarUrl = await resolveStreamerAvatar(stream.platform, stream.slug);
+    }
     if (avatarUrl) {
       try {
         const res = await fetch(avatarUrl, { signal: AbortSignal.timeout(5000) });
@@ -74,11 +114,11 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
       }), frame, fps, seconds);
       trace.push(result.metrics);
       const buffer = Buffer.from(result.png, 'base64');
-      if (encoder.exitCode !== null) throw new Error(`FFmpeg terminó prematuramente: ${stderr}`);
-      if (!encoder.stdin.write(buffer)) await Promise.race([
-        once(encoder.stdin, 'drain'), finished.then(() => { throw new Error('Encoder cerrado antes del último frame'); })
-      ]);
       if (frame === frames - 1) fs.writeFileSync(pngPath, buffer);
+      if (encoder.exitCode !== null) throw new Error(`FFmpeg terminó prematuramente (${encoder.exitCode}): ${stderr}`);
+      if (!encoder.stdin.write(buffer)) {
+        await Promise.race([once(encoder.stdin, 'drain'), finished.then(() => { throw new Error('Encoder cerrado'); })]);
+      }
     }
     encoder.stdin.end();
     await finished;
@@ -90,4 +130,4 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
   }
 }
 
-module.exports = { renderReport };
+module.exports = { renderReport, resolveStreamerAvatar };
