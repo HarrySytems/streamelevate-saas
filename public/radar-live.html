@@ -1042,7 +1042,7 @@
 
     // Exporta el mismo canvas, con reloj determinista y sin consultar la API.
     if (exportMode) window.RadarExport = {
-      prepare({ stream, samples, summary }) {
+      async prepare({ stream, samples, summary }) {
         currentSlug = stream.slug; currentPlatform = stream.platform;
         currentStreamerData = { ...stream, ...summary, is_live: false };
         currentSamples = samples;
@@ -1053,6 +1053,15 @@
         for (let i = 0; i <= 1120; i++) times.add(first + (last - first) * i / 1120);
         densePoints = [...times].sort((a,b) => a-b).map(t => ({t, v: currentInterpolator(t)}));
         currentMode = 'replay'; showEqualizerBars = true; targetViewerCount = 0;
+        const av = stream.avatar_data || stream.avatar_url || stream.avatar;
+        if (av) {
+          try {
+            const img = new Image();
+            img.src = av;
+            await new Promise(r => { img.onload = r; img.onerror = r; setTimeout(r, 2000); });
+            if (img.naturalWidth > 0) streamerAvatarImg = img;
+          } catch (e) {}
+        }
       },
       drawFrame(frame, fps, seconds) {
         replayProgress = frame / (Math.round(fps * seconds) - 1);

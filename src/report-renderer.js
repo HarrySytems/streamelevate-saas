@@ -34,7 +34,23 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
     await page.emulateTimezone(process.env.RADAR_TIMEZONE || 'America/Lima');
     const html = fs.readFileSync(path.join(__dirname, '../public/radar-live.html'), 'utf8');
     await page.setContent(html.replace('<head>', '<head><script>window.__RADAR_EXPORT__=true;</script>'));
-    await page.evaluate(payload => window.RadarExport.prepare(payload), { stream, samples, summary });
+        let avatarData = null;
+    const avatarUrl = stream.avatar_url || stream.avatar;
+    if (avatarUrl) {
+      try {
+        const res = await fetch(avatarUrl, { signal: AbortSignal.timeout(5000) });
+        if (res.ok) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          const mime = res.headers.get('content-type') || 'image/jpeg';
+          avatarData = `data:${mime};base64,${buf.toString('base64')}`;
+        }
+      } catch (e) {}
+    }
+    await page.evaluate(async payload => await window.RadarExport.prepare(payload), {
+      stream: { ...stream, avatar_data: avatarData },
+      samples,
+      summary
+    });
 
     encoder = spawn(mediaPaths().ffmpeg, [
       '-y', '-hide_banner', '-loglevel', 'error', '-f', 'image2pipe', '-vcodec', 'png',
