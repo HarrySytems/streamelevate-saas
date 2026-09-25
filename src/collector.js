@@ -74,24 +74,16 @@ function loadStreamersDatabase() {
           try {
             initialSamples = stmts.getAudienceSamples.all(row.id).map(s => ({ timestamp: s.timestamp, viewers: s.viewers }));
           } catch(e) {}
-          let broadcastId = row.broadcast_id;
-          if (!broadcastId) {
-            if (row.id.includes(':')) {
-              broadcastId = row.id.split(':')[2];
-            } else {
-              // Manejar slugs con guiones bajos como rivers_gg sin romper
-              const prefix = `${row.platform}_${row.slug.toLowerCase()}_`;
-              if (row.id.startsWith(prefix)) {
-                broadcastId = row.id.substring(prefix.length);
-              } else {
-                broadcastId = row.id;
-              }
-            }
+          // Conservar broadcastId oficial o null si es provisional/desconocido (NUNCA derivar del ID interno UUID)
+          let broadcastId = row.broadcast_id || null;
+          if (broadcastId && broadcastId.startsWith('prov_')) {
+            broadcastId = null;
           }
 
           memoryState.activeStreams.set(key, {
             id: row.id,
             broadcastId,
+            isProvisional: !broadcastId,
             slug: row.slug.toLowerCase(),
             platform: row.platform,
             startedAt: row.started_at,

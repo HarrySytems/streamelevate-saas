@@ -374,7 +374,21 @@
       document.getElementById('btnBarsToggle').textContent = `🎛️ Barras de Espectro: ${showEqualizerBars ? 'ON' : 'OFF'}`;
     }
 
-    function startReplay() {
+    async function startReplay() {
+      // Cargar resumen final antes de reproducir para fijar media desde el principio
+      if (currentStreamerData?.stream_id && currentStreamerData?.avg_viewers === undefined) {
+        try {
+          const slug = currentStreamerSlug || currentStreamerData?.slug;
+          const sessRes = await fetch(`/api/v1/streamers/${slug}/session/${currentStreamerData.stream_id}`);
+          if (sessRes.ok) {
+            const sessData = await sessRes.json();
+            if (sessData.stream && sessData.stream.avg_viewers !== undefined) {
+              currentStreamerData.avg_viewers = sessData.stream.avg_viewers;
+            }
+          }
+        } catch (e) {}
+      }
+
       setMode('replay');
       replayProgress = 0;
       const durationMs = 12000; // 12 segundos de reproducción continua
@@ -718,10 +732,16 @@
       ctx.arc(hX, hY, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Badge flotante sobre la punta con el número exacto (con media final fija al completar)
+      // Badge flotante sobre la punta con el número exacto (con media final fija desde el principio del replay)
       let badgeText = `${Math.round(hV).toLocaleString()} VIEWERS`;
-      if (currentMode === 'replay' && replayProgress === 1 && currentStreamerData?.avg_viewers) {
-        badgeText = `FINAL: ${Math.round(hV).toLocaleString()} • MEDIA: ${Math.round(currentStreamerData.avg_viewers).toLocaleString()}`;
+      if (currentMode === 'replay') {
+        const avg = currentStreamerData?.avg_viewers;
+        const hasValidAvg = avg !== null && avg !== undefined && Number.isFinite(Number(avg));
+        if (replayProgress >= 1) {
+          badgeText = `FINAL: ${Math.round(hV).toLocaleString()}${hasValidAvg ? ` • MEDIA: ${Math.round(avg).toLocaleString()}` : ''}`;
+        } else if (hasValidAvg) {
+          badgeText = `${Math.round(hV).toLocaleString()} VIEWERS • MEDIA: ${Math.round(avg).toLocaleString()}`;
+        }
       }
       ctx.font = '900 13px Arial';
       const bW = ctx.measureText(badgeText).width + 16;
