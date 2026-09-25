@@ -636,44 +636,43 @@
         } else ctx.fillText(timeStr, xPos, MARGIN.bottom + 10);
       }
 
-      // 9. Filtrar puntos visibles según el modo (Live o Replay)
+      // 9. Filtrar puntos visibles según el modo (Live o Replay) - 100% DATOS REALES
       const progress = currentMode === 'replay' ? Math.max(0, Math.min(1, replayProgress)) : 1;
       const headTime = progress === 1 ? lastT : firstT + progress * (lastT - firstT);
       const visiblePoints = densePoints.filter(p => p.t < headTime);
-      visiblePoints.push({ t: headTime, v: currentInterpolator(headTime) });
+      visiblePoints.push({ t: headTime, v: currentInterpolator ? currentInterpolator(headTime) : targetViewerCount });
 
-      // Suavizado e interpolación de espectadores en vivo (60fps reactivo)
-      let viewerMotion = 0;
+      // Suavizado orgánico del número del cabezal en vivo a 60fps conectado al bot
       if (currentMode === 'live' && targetViewerCount > 0) {
-        const diff = targetViewerCount - displayedViewerCount;
-        viewerMotion = Math.abs(diff);
-        displayedViewerCount += diff * 0.14;
+        displayedViewerCount += (targetViewerCount - displayedViewerCount) * 0.08;
       }
       const head = visiblePoints[visiblePoints.length - 1];
       const hX = getX(head.t);
       const hV = (currentMode === 'live' && targetViewerCount > 0) ? displayedViewerCount : head.v;
       const hY = getY(hV);
 
-      // Conexión fluida de la cola de la curva hacia la aguja activa en vivo
-      if (currentMode === 'live' && targetViewerCount > 0 && visiblePoints.length > 2) {
-        const blendN = Math.min(30, Math.floor(visiblePoints.length * 0.35));
-        const lastIdx = visiblePoints.length - 1;
-        visiblePoints[lastIdx].v = hV;
-        for (let b = 1; b <= blendN; b++) {
-          const idx = lastIdx - b;
-          if (idx < 0) break;
-          const weight = 1 - (b / (blendN + 1));
-          const smoothW = weight * weight * (3 - 2 * weight);
-          visiblePoints[idx].v = visiblePoints[idx].v * (1 - smoothW) + hV * smoothW;
+      // Función reactiva viva del cabezal: conecta matemáticamente la curva y los hilos al bot
+      function getLiveCurveValue(t) {
+        const pchipVal = currentInterpolator ? currentInterpolator(t) : hV;
+        if (currentMode !== 'live' || targetViewerCount <= 0 || !displayedViewerCount) {
+          return pchipVal;
         }
+        // Ventana viva del cabezal: últimos 40-75s o 10% del gráfico para transición suave
+        const leadWindow = Math.min(75000, Math.max(15000, timeSpan * 0.10));
+        const tLead = lastT - leadWindow;
+        if (t <= tLead) return pchipVal;
+
+        const u = Math.max(0, Math.min(1, (t - tLead) / leadWindow));
+        const s = u * u * (3 - 2 * u); // Smoothstep Hermite
+        return (1 - s) * pchipVal + s * displayedViewerCount;
       }
 
       // ========================================== 
-      // 10. RESPLANDOR AMBIENTAL BAJO LA CURVA
+      // 10. RESPLANDOR AMBIENTAL TRANSLÚCIDO BAJO LA CURVA (SUTIL Y ELEGANTE)
       // ========================================== 
       const areaGrad = ctx.createLinearGradient(0, MARGIN.top, 0, MARGIN.bottom);
-      areaGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.12)' : 'rgba(169, 112, 255, 0.12)');
-      areaGrad.addColorStop(0.65, isKick ? 'rgba(83, 252, 24, 0.03)' : 'rgba(169, 112, 255, 0.03)');
+      areaGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.04)' : 'rgba(169, 112, 255, 0.04)');
+      areaGrad.addColorStop(0.70, isKick ? 'rgba(83, 252, 24, 0.01)' : 'rgba(169, 112, 255, 0.01)');
       areaGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.fillStyle = areaGrad;
@@ -681,50 +680,43 @@
       ctx.moveTo(getX(visiblePoints[0].t), MARGIN.bottom);
       visiblePoints.forEach((p, idx) => {
         const isLast = (idx === visiblePoints.length - 1);
-        const py = isLast ? hY : getY(p.v);
-        ctx.lineTo(getX(p.t), py);
+        const px = isLast ? hX : getX(p.t);
+        const py = isLast ? hY : getY(getLiveCurveValue(p.t));
+        ctx.lineTo(px, py);
       });
       ctx.lineTo(hX, MARGIN.bottom);
       ctx.closePath();
       ctx.fill();
 
       // ========================================== 
-      // 11. ECUALIZADOR: COLUMNA VERTEBRAL & HILOS INTEGRADOS AL 100%
-      // (Los hilos nacen en la base y mueren EXACTAMENTE en la curva)
+      // 11. ECUALIZADOR TÍTERE DE HILOS: COLUMNA VERTEBRAL
+      // (Hilos finos translúcidos individuales que nacen en el suelo y mueren EXACTAMENTE en la curva)
       // ========================================== 
       let barsDrawn = 0;
       if (showEqualizerBars) {
-        const threadStep = 2.8;
-        const threadWidth = 1.0;
-        const chatSpeed = currentStreamerData?.chat_velocity?.msgs_per_min || 0;
-        // Reactividad real basada en el bot (sin simulaciones falsas)
-        const topAlpha = Math.min(0.95, 0.72 + Math.min(0.20, viewerMotion / 150) + (chatSpeed / 2500));
-        const midAlpha = Math.min(0.48, 0.30 + (chatSpeed / 3000));
+        // En exportación 6.5px garantiza >100 barras en 800px; en vivo 6.0px da alta definición con respiración
+        const threadStep = exportMode ? 6.5 : 6.0;
+        const threadWidth = 0.9;
         const maxBarX = Math.min(hX - 0.5, (W - MARGIN.right) - 0.5);
 
         for (let bx = MARGIN.left; bx <= maxBarX; bx += threadStep) {
           const normX = Math.max(0, Math.min(1, (bx - MARGIN.left) / graphW));
           const targetT = firstT + normX * timeSpan;
-          let pVal = currentInterpolator ? currentInterpolator(targetT) : 0;
-          if (currentMode === 'live' && targetViewerCount > 0 && normX > 0.70) {
-            const blendW = (normX - 0.70) / 0.30;
-            const smoothW = blendW * blendW * (3 - 2 * blendW);
-            pVal = pVal * (1 - smoothW) + hV * smoothW;
-          }
-          // Altura matemática exacta sobre la curva (columna vertebral)
+          const pVal = getLiveCurveValue(targetT);
+          // La altura del hilo es 100% matemática sobre la curva (columna vertebral)
           const baseY = getY(pVal);
 
           const maxAvail = Math.max(0, MARGIN.bottom - baseY);
           if (maxAvail <= 1.5) continue;
 
-          // Gradiente vertical limpio que nace en el fondo y se fusiona en la curva
+          // Gradiente translúcido estilo foto de referencia (fino y etéreo, no bloque sólido)
           const threadGrad = ctx.createLinearGradient(0, baseY, 0, MARGIN.bottom);
-          threadGrad.addColorStop(0, isKick ? `rgba(83, 252, 24, ${topAlpha.toFixed(2)})` : `rgba(192, 132, 252, ${topAlpha.toFixed(2)})`);
-          threadGrad.addColorStop(0.40, isKick ? `rgba(83, 252, 24, ${midAlpha.toFixed(2)})` : `rgba(169, 112, 255, ${midAlpha.toFixed(2)})`);
-          threadGrad.addColorStop(0.80, isKick ? 'rgba(83, 252, 24, 0.08)' : 'rgba(169, 112, 255, 0.08)');
+          threadGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.40)' : 'rgba(192, 132, 252, 0.45)');
+          threadGrad.addColorStop(0.35, isKick ? 'rgba(83, 252, 24, 0.15)' : 'rgba(169, 112, 255, 0.18)');
+          threadGrad.addColorStop(0.80, isKick ? 'rgba(83, 252, 24, 0.03)' : 'rgba(169, 112, 255, 0.03)');
           threadGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
-          // El hilo conecta DIRECTO desde el piso hasta baseY sin salirse ni 1 pixel
+          // Conexión hilo por hilo: nace en MARGIN.bottom y termina EXACTAMENTE en baseY
           ctx.strokeStyle = threadGrad;
           ctx.lineWidth = threadWidth;
           ctx.beginPath();
@@ -740,21 +732,21 @@
       // ========================================== 
       ctx.save();
       ctx.strokeStyle = neon;
-      ctx.lineWidth = 0.8;
+      ctx.lineWidth = 0.85;
       ctx.shadowColor = neon;
       ctx.shadowBlur = 4;
       ctx.beginPath();
       visiblePoints.forEach((p, idx) => {
         const isLast = (idx === visiblePoints.length - 1);
         const px = isLast ? hX : getX(p.t);
-        const py = isLast ? hY : getY(p.v);
+        const py = isLast ? hY : getY(getLiveCurveValue(p.t));
         if (idx === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       });
       ctx.stroke();
       ctx.restore();
 
-      // Filamento central hiper-definido para nitidez broadcast
+      // Filamento central blanco nítido para máxima definición broadcast
       ctx.save();
       ctx.strokeStyle = isKick ? 'rgba(235, 255, 240, 0.95)' : 'rgba(250, 245, 255, 0.95)';
       ctx.lineWidth = 0.45;
@@ -762,14 +754,13 @@
       visiblePoints.forEach((p, idx) => {
         const isLast = (idx === visiblePoints.length - 1);
         const px = isLast ? hX : getX(p.t);
-        const py = isLast ? hY : getY(p.v);
+        const py = isLast ? hY : getY(getLiveCurveValue(p.t));
         if (idx === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       });
       ctx.stroke();
       ctx.restore();
 
-      // ========================================== 
       // 13. AGUJA Y CABEZAL LUMINOSO (ÚNICO BADGE OFICIAL EN EL CABEZAL ACTIVO)
       // ========================================== 
       // Guía vertical técnica punteada desde la aguja hasta el eje inferior
@@ -925,6 +916,26 @@
           img.src = currentAvatarUrl;
         }
 
+        // Si está offline o no tiene stream_id activo, recuperar la última emisión registrada
+        if (!currentStreamerData.stream_id) {
+          try {
+            const recRes = await fetch(`/api/v1/streamers/${slug}/recent`);
+            if (recRes.ok) {
+              const recData = await recRes.json();
+              if (Array.isArray(recData.streams) && recData.streams.length > 0) {
+                const lastStream = recData.streams[0];
+                currentStreamerData.stream_id = lastStream.id;
+                currentStreamerData.title = lastStream.title || currentStreamerData.title;
+                currentStreamerData.category = lastStream.category || currentStreamerData.category;
+                currentStreamerData.started_at = lastStream.started_at ? new Date(lastStream.started_at).getTime() : null;
+                currentStreamerData.ended_at = lastStream.ended_at ? new Date(lastStream.ended_at).getTime() : null;
+                currentStreamerData.avg_viewers = lastStream.avg_viewers;
+                currentStreamerData.peak_viewers = lastStream.peak_viewers;
+              }
+            }
+          } catch (e) {}
+        }
+
         // Cargar historial de muestras (1ra prioridad: historial completo de SQLite, luego RAM)
         let liveSamples = Array.isArray(currentStreamerData.samples) ? currentStreamerData.samples : [];
         if (currentStreamerData.stream_id) {
@@ -968,6 +979,7 @@
           if (now - lastSample.timestamp > 15000) {
             currentSamples.push({ timestamp: now, viewers: targetViewerCount });
           } else {
+            lastSample.timestamp = now;
             lastSample.viewers = targetViewerCount;
           }
         }
@@ -985,11 +997,6 @@
         for (let i = 0; i <= count; i++) {
           const t = t0 + (i / count) * span;
           densePoints.push({ t, v: interp(t) });
-        }
-
-        // Asegurar que el punto final coincida con los viewers exactos
-        if (densePoints.length > 0 && targetViewerCount > 0) {
-          densePoints[densePoints.length - 1].v = targetViewerCount;
         }
 
         updateStatusText();
