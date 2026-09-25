@@ -427,6 +427,10 @@ function closeStreamSession(active) {
     // null = cobertura insuficiente.
     // NO sustituir por active.viewers: ese valor no es una media, es el último dato puntual.
 
+    const endFollowers = active.endFollowers != null ? active.endFollowers : (active.startFollowers || null);
+    const startFollowers = active.startFollowers != null ? active.startFollowers : null;
+    const followersDiff = (startFollowers != null && endFollowers != null) ? (endFollowers - startFollowers) : null;
+
     if (active.ignoreReports) {
       // Política de primera emisión completa: cerrar en BD pero OMITIR reporte
       stmts.closeStream.run({
@@ -437,7 +441,9 @@ function closeStreamSession(active) {
         last_live_at: active.lastLiveAt || finalEndedAt,
         first_offline_at: active.firstOfflineAt || active.offlineSince || finalEndedAt,
         total_messages: stats?.total_messages || 0,
-        unique_chatters: stats?.unique_chatters || 0
+        unique_chatters: stats?.unique_chatters || 0,
+        end_followers: endFollowers,
+        followers_diff: followersDiff
       });
       console.log(`[StreamElevate Colector] Sesión ${active.id} (${active.slug}) cerrada sin reporte (política de primera emisión completa).`);
     } else {
@@ -451,7 +457,9 @@ function closeStreamSession(active) {
           last_live_at: active.lastLiveAt || finalEndedAt,
           first_offline_at: active.firstOfflineAt || active.offlineSince || finalEndedAt,
           total_messages: stats?.total_messages || 0,
-          unique_chatters: stats?.unique_chatters || 0
+          unique_chatters: stats?.unique_chatters || 0,
+          end_followers: endFollowers,
+          followers_diff: followersDiff
         });
       });
     }
@@ -470,6 +478,31 @@ function closeStreamSession(active) {
     active.pendingClose = true;
     return false;
   }
+}
+
+const kickFollowersCache = new Map(); // slug -> { count, at }
+
+async function fetchKickFollowers(slug) {
+  const norm = slug.toLowerCase();
+  const cached = kickFollowersCache.get(norm);
+  if (cached && (Date.now() - cached.at < 60000)) {
+    return cached.count;
+  }
+  try {
+    const res = await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(norm)}`, {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(4000)
+    });
+    if (res.ok) {
+      const d = await res.json();
+      const count = Number(d.followers_count) || null;
+      if (count != null) {
+        kickFollowersCache.set(norm, { count, at: Date.now() });
+        return count;
+      }
+    }
+  } catch (e) {}
+  return null;
 }
 
 async function pollKickBatch(channels) {
@@ -605,6 +638,9 @@ async function pollKickBatch(channels) {
 
         if (!active) {
           const ignoreReportsVal = ignoreReportsForNewSession ? 1 : 0;
+          let initFollowers = null;
+          try { initFollowers = await fetchKickFollowers(slug); } catch(e) {}
+
           stmts.createStream.run({
             id: effectiveStreamId,
             broadcast_id: actualBroadcastId,
@@ -615,7 +651,10 @@ async function pollKickBatch(channels) {
             started_at: realStartedAt,
             peak_viewers: viewers,
             last_live_at: now,
-            ignore_reports: ignoreReportsVal
+            ignore_reports: ignoreReportsVal,
+            start_followers: initFollowers,
+            end_followers: initFollowers,
+            followers_diff: 0
           });
           active = {
             id: effectiveStreamId,
@@ -631,6 +670,8 @@ async function pollKickBatch(channels) {
             title,
             avatarUrl,
             chatroomId,
+            startFollowers: initFollowers,
+            endFollowers: initFollowers,
             ignoreReports: Boolean(ignoreReportsVal)
           };
           memoryState.activeStreams.set(key, active);
@@ -702,6 +743,9 @@ const TWITCH_GQL_QUERY = `
     user(login: $login) {
       id
       profileImageURL(width: 300)
+      followers {
+        totalCount
+      }
       stream {
         id
         title
@@ -751,6 +795,7 @@ async function pollTwitchBatch(channels) {
       }
 
       const user = item.data.user;
+      const followers = Number(user?.followers?.totalCount) || null;
       const stream = user?.stream;
       const isLive = Boolean(stream && stream.type === 'live');
       const viewers = isLive ? (Number(stream.viewersCount) || 0) : 0;
@@ -847,7 +892,10 @@ async function pollTwitchBatch(channels) {
             started_at: realStartedAt,
             peak_viewers: viewers,
             last_live_at: now,
-            ignore_reports: ignoreReportsVal
+            ignore_reports: ignoreReportsVal,
+            start_followers: followers,
+            end_followers: followers,
+            followers_diff: 0
           });
           active = {
             id: effectiveStreamId,
@@ -862,6 +910,8 @@ async function pollTwitchBatch(channels) {
             category,
             title,
             avatarUrl,
+            startFollowers: followers,
+            endFollowers: followers,
             ignoreReports: Boolean(ignoreReportsVal)
           };
           memoryState.activeStreams.set(key, active);
@@ -875,6 +925,9 @@ async function pollTwitchBatch(channels) {
           active.title = title;
           if (avatarUrl) active.avatarUrl = avatarUrl;
           active.lastLiveAt = now;
+          if (followers != null) {
+            active.endFollowers = followers;
+          }
           if (active.offlineSince) {
             const gapEnd = now;
             recordCaptureGap(active.id, active.offlineSince, gapEnd, 'reconnect');

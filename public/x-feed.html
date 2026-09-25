@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>(1) Inicio / X</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'><path d='M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z'/></svg>">
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    :root {
+      --bg-primary: #000000;
+      --bg-secondary: #16181c;
+      --bg-hover: rgba(231, 233, 234, 0.1);
+      --bg-hover-subtle: rgba(255, 255, 255, 0.03);
+      --border-color: rgb(47, 51, 54);
+      --text-primary: #e7e9ea;
+      --text-secondary: #71767b;
+      --twitter-blue: #1d9bf0;
+      --twitter-blue-hover: #1a8cd8;
+      --twitter-green: #00ba7c;
+      --twitter-pink: #f91880;
+      --btn-white: #eff3f4;
+      --btn-white-hover: #d7dbdc;
+      --gold: #e2b714;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow-y: scroll;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app-container {
+      max-width: 1265px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    /* ========================================================
+       1. SIDEBAR IZQUIERDO (NAVEGACIÓN)
+       ======================================================== */
+    .sidebar-left {
+      width: 275px;
+      padding: 0 12px;
+      height: 100vh;
+      position: sticky;
+      top: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border-right: 1px solid var(--border-color);
+      flex-shrink: 0;
+    }
+
+    .nav-group {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .x-logo-container {
+      padding: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      cursor: pointer;
+      margin-top: 2px;
+      margin-bottom: 2px;
+      transition: background 0.2s;
+    }
+    .x-logo-container:hover {
+      background: var(--bg-hover);
+    }
+    .x-logo-icon {
+      width: 28px;
+      height: 28px;
+      fill: #ffffff;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 11px 16px;
+      border-radius: 9999px;
+      font-size: 20px;
+      font-weight: 400;
+      color: var(--text-primary);
+      text-decoration: none;
+      transition: background 0.2s;
+      cursor: pointer;
+      width: fit-content;
+    }
+    .nav-item:hover {
+      background: var(--bg-hover);
+    }
+    .nav-item.active {
+      font-weight: 700;
+    }
+    .nav-item svg {
+      width: 26px;
+      height: 26px;
+      fill: currentColor;
+    }
+
+    .badge-dot {
+      background-color: var(--twitter-blue);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      margin-left: -12px;
+      margin-top: -14px;
+    }
+
+    /* Botón Postear (Exacto como X en modo oscuro: fondo blanco, letra negra) */
+    .btn-tweet-large {
+      margin-top: 14px;
+      width: 90%;
+      height: 52px;
+      background-color: var(--btn-white);
+      color: #0f1419;
+      border: none;
+      border-radius: 9999px;
+      font-size: 17px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-tweet-large:hover {
+      background-color: var(--btn-white-hover);
+    }
+
+    /* Perfil de usuario inferior izquierda */
+    .user-pill {
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-radius: 9999px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .user-pill:hover {
+      background: var(--bg-hover);
+    }
+    .user-pill-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .avatar-user {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 30% 30%, #3b82f6, #1e1b4b, #000000);
+      border: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #60a5fa;
+      font-weight: bold;
+      font-size: 13px;
+    }
+    .user-names {
+      display: flex;
+      flex-direction: column;
+    }
+    .user-name-bold {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--text-primary);
+    }
+    .user-handle {
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+
+    /* ========================================================
+       2. COLUMNA CENTRAL (FEED / TIMELINE)
+       ======================================================== */
+    .timeline-column {
+      width: 600px;
+      border-right: 1px solid var(--border-color);
+      min-height: 100vh;
+      flex-shrink: 0;
+    }
+
+    .top-header {
+      position: sticky;
+      top: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(12px);
+      z-index: 50;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-right: 16px;
+    }
+    .top-tabs {
+      display: flex;
+      height: 53px;
+      flex: 1;
+    }
+    .tab {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      font-weight: 500;
+      font-size: 15px;
+      color: var(--text-secondary);
+      transition: background 0.2s;
+    }
+    .tab:hover {
+      background: var(--bg-hover);
+    }
+    .tab.active {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+    .tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      width: 56px;
+      height: 4px;
+      background-color: var(--twitter-blue);
+      border-radius: 9999px;
+    }
+    .header-plus-icon {
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .header-plus-icon:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    /* Compose tweet box */
+    .compose-box {
+      display: flex;
+      padding: 16px;
+      gap: 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .compose-main {
+      flex: 1;
+    }
+    .compose-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-size: 19px;
+      outline: none;
+      resize: none;
+      min-height: 44px;
+      font-family: inherit;
+    }
+    .compose-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      padding-top: 12px;
+      margin-top: 8px;
+    }
+    .compose-icons {
+      display: flex;
+      gap: 4px;
+    }
+    .compose-icon-btn {
+      background: none;
+      border: none;
+      color: var(--twitter-blue);
+      cursor: pointer;
+      padding: 8px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+    .compose-icon-btn:hover {
+      background: rgba(29, 155, 240, 0.1);
+    }
+    .compose-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .btn-simulate-post {
+      background: rgba(29, 155, 240, 0.15);
+      border: 1px solid var(--twitter-blue);
+      color: var(--twitter-blue);
+      border-radius: 9999px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-simulate-post:hover {
+      background: var(--twitter-blue);
+      color: #fff;
+    }
+    .btn-compose-submit {
+      background-color: var(--btn-white);
+      color: #0f1419;
+      border: none;
+      border-radius: 9999px;
+      padding: 8px 18px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .btn-compose-submit:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    /* Barra "Mostrar 70 posts" exacta del screenshot */
+    .show-posts-bar {
+      border-bottom: 1px solid var(--border-color);
+      padding: 14px;
+      text-align: center;
+      color: var(--twitter-blue);
+      font-size: 15px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .show-posts-bar:hover {
+      background: var(--bg-hover-subtle);
+    }
+
+    /* ========================================================
+       3. TWEET CARD (CARD EXACTA DE X / TWITTER)
+       ======================================================== */
+    .tweet-card {
+      display: flex;
+      padding: 14px 16px;
+      gap: 12px;
+      border-bottom: 1px solid var(--border-color);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .tweet-card:hover {
+      background-color: var(--bg-hover-subtle);
+    }
+    .tweet-avatar-col {
+      flex-shrink: 0;
+    }
+    .tweet-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: #2f3336;
+      object-fit: cover;
+    }
+    .tweet-content-col {
+      flex: 1;
+      min-width: 0;
+    }
+    .tweet-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .tweet-meta {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .author-name {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--text-primary);
+    }
+    .verified-badge {
+      width: 18px;
+      height: 18px;
+      fill: var(--twitter-blue);
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .verified-badge-gold {
+      width: 18px;
+      height: 18px;
+      fill: var(--gold);
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .author-handle {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    .dot-sep {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    .tweet-time {
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+    .tweet-more-btn {
+      color: var(--text-secondary);
+      background: none;
+      border: none;
+      cursor: pointer;
+      border-radius: 50%;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.15s, background 0.15s;
+    }
+    .tweet-more-btn:hover {
+      color: var(--twitter-blue);
+      background: rgba(29, 155, 240, 0.1);
+    }
+
+    .tweet-text {
+      font-size: 15px;
+      line-height: 1.45;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 12px;
+    }
+    .tweet-hashtag {
+      color: var(--twitter-blue);
+      text-decoration: none;
+    }
+    .tweet-hashtag:hover {
+      text-decoration: underline;
+    }
+
+    /* REPRODUCTOR DE VIDEO NATIVO DE TWITTER / X */
+    .tweet-media-box {
+      margin-top: 10px;
+      margin-bottom: 12px;
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      overflow: hidden;
+      background: #000000;
+      position: relative;
+      max-height: 510px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .tweet-video-player {
+      width: 100%;
+      max-height: 510px;
+      background: #000;
+      display: block;
+      outline: none;
+      border-radius: 15px;
+    }
+    .tweet-image-preview {
+      width: 100%;
+      height: auto;
+      max-height: 510px;
+      display: block;
+      object-fit: cover;
+      cursor: pointer;
+    }
+
+    /* 6 ACCIONES DE TWEET (REPLY, RETWEET, LIKE, VIEWS, BOOKMARK, SHARE) */
+    .tweet-actions-row {
+      display: flex;
+      justify-content: space-between;
+      max-width: 500px;
+      margin-top: 6px;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+    .action-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font-size: inherit;
+      padding: 4px;
+      border-radius: 9999px;
+      transition: color 0.15s;
+    }
+    .action-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor;
+    }
+    .action-reply:hover {
+      color: var(--twitter-blue);
+    }
+    .action-repost:hover {
+      color: var(--twitter-green);
+    }
+    .action-like:hover, .action-like.liked {
+      color: var(--twitter-pink);
+    }
+    .action-like.liked svg {
+      fill: var(--twitter-pink);
+    }
+    .action-views:hover, .action-bookmark:hover, .action-share:hover {
+      color: var(--twitter-blue);
+    }
+
+    /* ========================================================
+       4. SIDEBAR DERECHO (TENDENCIAS Y RECOMENDADOS)
+       ======================================================== */
+    .sidebar-right {
+      width: 350px;
+      padding: 12px 24px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .search-bar-wrap {
+      position: sticky;
+      top: 0;
+      background: var(--bg-primary);
+      padding-bottom: 12px;
+      z-index: 20;
+    }
+    .search-box {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background-color: #202327;
+      border-radius: 9999px;
+      padding: 12px 18px;
+      border: 1px solid transparent;
+    }
+    .search-box:focus-within {
+      background: #000;
+      border-color: var(--twitter-blue);
+    }
+    .search-box input {
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-size: 15px;
+      outline: none;
+      width: 100%;
+    }
+
+    .sidebar-card {
+      background-color: var(--bg-secondary);
+      border-radius: 16px;
+      border: 1px solid var(--border-color);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 20px;
+      font-weight: 800;
+      margin-bottom: 10px;
+      color: var(--text-primary);
+    }
+    .card-desc {
+      font-size: 14px;
+      line-height: 1.4;
+      color: var(--text-primary);
+      margin-bottom: 14px;
+    }
+    .btn-card-blue {
+      background: var(--twitter-blue);
+      color: #ffffff;
+      border: none;
+      border-radius: 9999px;
+      padding: 8px 18px;
+      font-weight: 700;
+      font-size: 15px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-card-blue:hover {
+      background: var(--twitter-blue-hover);
+    }
+
+    .trend-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 0;
+      cursor: pointer;
+    }
+    .trend-cat {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+    .trend-topic {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin: 2px 0;
+    }
+    .trend-count {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .btn-follow {
+      background: var(--btn-white);
+      color: #0f1419;
+      border: none;
+      border-radius: 9999px;
+      padding: 6px 16px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-follow:hover {
+      background: var(--btn-white-hover);
+    }
+
+    .follow-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      cursor: pointer;
+    }
+    .follow-item-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .follow-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: #202327;
+      object-fit: cover;
+    }
+
+    .link-more {
+      color: var(--twitter-blue);
+      font-size: 14px;
+      text-decoration: none;
+      display: inline-block;
+      margin-top: 10px;
+      cursor: pointer;
+    }
+    .link-more:hover {
+      text-decoration: underline;
+    }
+
+    .footer-links {
+      padding: 0 12px 30px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    .footer-links a {
+      color: inherit;
+      text-decoration: none;
+      margin-right: 8px;
+    }
+    .footer-links a:hover {
+      text-decoration: underline;
+    }
+
+    /* Botones flotantes inferiores derechos (idénticos a la captura) */
+    .floating-tools {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 100;
+    }
+    .btn-float-circle {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: #000000;
+      border: 1px solid var(--border-color);
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      transition: background 0.2s;
+    }
+    .btn-float-circle:hover {
+      background: #202327;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-container">
+
+  <!-- ==================== SIDEBAR IZQUIERDO ==================== -->
+  <aside class="sidebar-left">
+    <div class="nav-group">
+      <!-- Logo X -->
+      <div class="x-logo-container" onclick="window.location.reload()">
+        <svg class="x-logo-icon" viewBox="0 0 24 24">
+          <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+        </svg>
+      </div>
+
+      <!-- 1. Inicio -->
+      <a class="nav-item active" href="/x">
+        <svg viewBox="0 0 24 24"><path d="M21.591 7.146L12.52 1.157c-.316-.21-.724-.21-1.04 0l-9.071 5.99c-.26.173-.409.456-.409.757v13.183c0 .504.408.913.913.913h5.961a.913.913 0 00.913-.913v-5.961h6.226v5.961c0 .505.409.913.913.913h5.961c.505 0 .913-.408.913-.913V7.903c0-.301-.149-.584-.408-.757z"/></svg>
+        <span>Inicio</span>
+      </a>
+
+      <!-- 2. Explorar -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M10.25 3.75c-3.59 0-6.5 2.91-6.5 6.5s2.91 6.5 6.5 6.5c1.795 0 3.419-.726 4.596-1.904 1.178-1.177 1.904-2.801 1.904-4.596 0-3.59-2.91-6.5-6.5-6.5zm-8.5 6.5c0-4.694 3.806-8.5 8.5-8.5s8.5 3.806 8.5 8.5c0 1.986-.682 3.815-1.824 5.262l4.781 4.781-1.414 1.414-4.781-4.781c-1.447 1.142-3.276 1.824-5.262 1.824-4.694 0-8.5-3.806-8.5-8.5z"/></svg>
+        <span>Explorar</span>
+      </a>
+
+      <!-- 3. Notificaciones -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M19.993 9.042C19.48 5.017 16.054 2 11.996 2s-7.49 3.021-7.999 7.051L2.866 18H7.1c.463 2.282 2.481 4 4.9 4s4.437-1.718 4.9-4h4.236l-1.143-8.958zM12 20c-1.306 0-2.417-.835-2.829-2h5.658c-.412 1.165-1.523 2-2.829 2zm-6.866-4l.847-6.643C6.355 6.44 8.924 4 12 4s5.646 2.44 6.02 5.361L18.868 16H5.134z"/></svg>
+        <span>Notificaciones</span>
+        <span class="badge-dot">1</span>
+      </a>
+
+      <!-- 4. Seguir -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M17.863 13.445a6 6 0 10-7.726 0A9 9 0 002 22h2a7 7 0 1114 0h2a9 9 0 00-2.137-8.555zM14 8a4 4 0 11-8 0 4 4 0 018 0zm6.5 1h-2V7h-1v2h-2v1h2v2h1v-2h2v-1z"/></svg>
+        <span>Seguir</span>
+      </a>
+
+      <!-- 5. Chat -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M1.998 5.5c0-1.381 1.119-2.5 2.5-2.5h15c1.381 0 2.5 1.119 2.5 2.5v13c0 1.381-1.119 2.5-2.5 2.5h-15c-1.381 0-2.5-1.119-2.5-2.5v-13zm2.5-.5c-.276 0-.5.224-.5.5v2.764l8 3.638 8-3.636V5.5c0-.276-.224-.5-.5-.5h-15zm15.5 5.463l-7.56 3.437c-.281.127-.6.127-.88 0L3.998 10.463V18.5c0 .276.224.5.5.5h15c.276 0 .5-.224.5-.5v-8.037z"/></svg>
+        <span>Chat</span>
+      </a>
+
+      <!-- 6. Grok -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M2.204 2.25L10.36 12.39L2 21.75h2.61l6.936-7.98l5.805 7.98h7.445l-8.625-10.74L23.79 2.25h-2.61l-6.47 7.44L9.65 2.25H2.204z"/></svg>
+        <span>Grok</span>
+      </a>
+
+      <!-- 7. Historia -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M4 4.5C4 3.12 5.119 2 6.5 2h11C18.881 2 20 3.12 20 4.5v15c0 1.38-1.119 2.5-2.5 2.5h-11C5.119 22 4 20.88 4 19.5v-15zM6.5 4c-.276 0-.5.22-.5.5v15c0 .28.224.5.5.5h11c.276 0 .5-.22.5-.5v-15c0-.28-.224-.5-.5-.5h-11zM8 7h8v2H8V7zm0 4h8v2H8v-2zm0 4h5v2H8v-2z"/></svg>
+        <span>Historia</span>
+      </a>
+
+      <!-- 8. Estudio para crea... -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M14.05 2.05l7.9 7.9-12 12H2.05v-7.9l12-12zm-2.12 4.24l-9.88 9.88v3.78h3.78l9.88-9.88-3.78-3.78zM15.46 3.46l2.36 2.36 1.41-1.41-2.36-2.36-1.41 1.41z"/></svg>
+        <span>Estudio para crea...</span>
+      </a>
+
+      <!-- 9. Premium -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+        <span>Premium</span>
+      </a>
+
+      <!-- 10. Perfil -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
+        <span>Perfil</span>
+      </a>
+
+      <!-- 11. Más opciones -->
+      <a class="nav-item" href="#">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.5"/><circle cx="6" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/></svg>
+        <span>Más opciones</span>
+      </a>
+
+      <!-- Botón Postear blanco idéntico -->
+      <button class="btn-tweet-large" onclick="triggerSimulatePost()">Postear</button>
+    </div>
+
+    <!-- Perfil de usuario en la parte inferior izquierda: DevS+ @linux55d -->
+    <div class="user-pill">
+      <div class="user-pill-left">
+        <div class="avatar-user">D+</div>
+        <div class="user-names">
+          <span class="user-name-bold">DevS+</span>
+          <span class="user-handle">@linux55d</span>
+        </div>
+      </div>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="#71767b"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+    </div>
+  </aside>
+
+  <!-- ==================== COLUMNA CENTRAL (TIMELINE) ==================== -->
+  <main class="timeline-column">
+    <!-- Header fijo con pestañas y botón "+" -->
+    <div class="top-header">
+      <div class="top-tabs">
+        <div class="tab active">Para ti</div>
+        <div class="tab">Siguiendo</div>
+      </div>
+      <div class="header-plus-icon" title="Opciones de timeline">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6z"/></svg>
+      </div>
+    </div>
+
+    <!-- Caja de redacción "¿Qué está pasando?" -->
+    <div class="compose-box">
+      <div class="avatar-user" style="width: 40px; height: 40px; flex-shrink: 0;">D+</div>
+      <div class="compose-main">
+        <textarea id="composeText" class="compose-input" placeholder="¿Qué está pasando?"></textarea>
+        <div class="compose-toolbar">
+          <div class="compose-icons">
+            <button class="compose-icon-btn" title="Media"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5C3 4.119 4.119 3 5.5 3h13C19.881 3 21 4.119 21 5.5v13c0 1.381-1.119 2.5-2.5 2.5h-13C4.119 21 3 19.881 3 18.5v-13zM5.5 5c-.276 0-.5.224-.5.5v9.086l3.293-3.293a1 1 0 011.414 0l4 4 2.293-2.293a1 1 0 011.414 0L19 14.586V5.5c0-.276-.224-.5-.5-.5h-13zM19 17.414l-3.293-3.293-2.293 2.293a1 1 0 01-1.414 0l-4-4L5 15.414V18.5c0 .276.224.5.5.5h13c.276 0 .5-.224.5-.5v-1.086zM8.5 7a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/></svg></button>
+            <button class="compose-icon-btn" title="GIF"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 4.5A2.5 2.5 0 015.5 2h13A2.5 2.5 0 0121 4.5v15a2.5 2.5 0 01-2.5 2.5h-13A2.5 2.5 0 013 19.5v-15zM5.5 4c-.276 0-.5.224-.5.5v15c0 .276.224.5.5.5h13c.276 0 .5-.224.5-.5v-15c0-.276-.224-.5-.5-.5h-13zM9.5 9h-2a1 1 0 00-1 1v4a1 1 0 001 1h2a1 1 0 001-1v-1.5H9v-1h2V10a1 1 0 00-1-1zm3 0H11v6h1.5V9zm3 0h-2v6h1.5v-2H17v-1h-1.5v-1.5H17V9z"/></svg></button>
+            <button class="compose-icon-btn" title="Encuesta"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h12v2H6V5zm0 6h12v2H6v-2zm0 6h12v2H6v-2z"/></svg></button>
+            <button class="compose-icon-btn" title="Emoji"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.486 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.514 2 12 2zm0 18c-4.411 0-8-3.589-8-8s3.589-8 8-8 8 3.589 8 8-3.589 8-8 8zm-3.5-9a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm7 0a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm-3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg></button>
+            <button class="compose-icon-btn" title="Programar"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 2v2H5a2 2 0 00-2 2v13a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2h-2V2h-2v2H9V2H7zm12 6v11H5V8h14zm-4 3h-4v4h4v-4z"/></svg></button>
+            <button class="compose-icon-btn" title="Ubicación"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.134 2 5 5.134 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.866-3.134-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z"/></svg></button>
+          </div>
+          <div class="compose-actions">
+            <button class="btn-simulate-post" onclick="triggerSimulatePost()" title="Simula que un stream finalizó y el bot publica">⚡ Simular Post Bot</button>
+            <button class="btn-compose-submit" id="btnPost" disabled>Postear</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Barra "Mostrar 70 posts" exacta del screenshot -->
+    <div class="show-posts-bar" id="newPostsBanner" onclick="window.scrollTo({top:0, behavior:'smooth'})">
+      Mostrar 70 posts
+    </div>
+
+    <!-- Feed de tweets -->
+    <div id="tweetsFeed">
+      <!-- Los posts se inyectan dinámicamente aquí -->
+    </div>
+  </main>
+
+  <!-- ==================== SIDEBAR DERECHO ==================== -->
+  <aside class="sidebar-right">
+    <!-- Buscador -->
+    <div class="search-bar-wrap">
+      <div class="search-box">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#71767b"><path d="M10.25 3.75c-3.59 0-6.5 2.91-6.5 6.5s2.91 6.5 6.5 6.5c1.795 0 3.419-.726 4.596-1.904 1.178-1.177 1.904-2.801 1.904-4.596 0-3.59-2.91-6.5-6.5-6.5zm-8.5 6.5c0-4.694 3.806-8.5 8.5-8.5s8.5 3.806 8.5 8.5c0 1.986-.682 3.815-1.824 5.262l4.781 4.781-1.414 1.414-4.781-4.781c-1.447 1.142-3.276 1.824-5.262 1.824-4.694 0-8.5-3.806-8.5-8.5z"/></svg>
+        <input type="text" placeholder="Buscar">
+      </div>
+    </div>
+
+    <!-- 1. Card "Suscríbete a Premium" exacta -->
+    <div class="sidebar-card">
+      <div class="card-title">Suscríbete a Premium</div>
+      <div class="card-desc">Despídete de los anuncios, consulta tus estadísticas, aplica boost a las respuestas y aprovecha más de 20 características.</div>
+      <button class="btn-card-blue">Suscribirse</button>
+    </div>
+
+    <!-- 2. Card "Qué está pasando" exacta -->
+    <div class="sidebar-card">
+      <div class="card-title">Qué está pasando</div>
+
+      <div class="trend-item">
+        <div>
+          <div class="trend-cat">Tendencia en Perú</div>
+          <div class="trend-topic">Shawn</div>
+        </div>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#71767b"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+      </div>
+
+      <div class="trend-item">
+        <div>
+          <div class="trend-cat">Deportes · Tendencia</div>
+          <div class="trend-topic">Manchester City</div>
+        </div>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#71767b"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+      </div>
+
+      <div class="trend-item">
+        <div>
+          <div class="trend-cat">Tendencia en Perú</div>
+          <div class="trend-topic">#LaGranjaVPMX</div>
+        </div>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#71767b"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+      </div>
+
+      <div class="trend-item">
+        <div>
+          <div class="trend-cat">Tendencia en Perú</div>
+          <div class="trend-topic">Toño Jauregui</div>
+        </div>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#71767b"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+      </div>
+
+      <div class="trend-item">
+        <div>
+          <div class="trend-cat">Streaming · RadarStream</div>
+          <div class="trend-topic">Westcol Spike +8k</div>
+          <div class="trend-count">19.7 mil posts</div>
+        </div>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#71767b"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+      </div>
+
+      <a class="link-more" href="#">Mostrar más</a>
+    </div>
+
+    <!-- 3. Card "A quién seguir" exacta -->
+    <div class="sidebar-card">
+      <div class="card-title">A quién seguir</div>
+
+      <div class="follow-item">
+        <div class="follow-item-left">
+          <img class="follow-avatar" src="https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png" alt="Jonas">
+          <div>
+            <div style="font-weight:700; font-size:15px; display:flex; align-items:center; gap:4px;">
+              Jonas
+              <svg class="verified-badge" viewBox="0 0 24 24"><path d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.33 2.33 4.83-4.83 1.41 1.42-6.24 6.24z"/></svg>
+            </div>
+            <div style="color:var(--text-secondary); font-size:14px;">@Davedurel123</div>
+          </div>
+        </div>
+        <button class="btn-follow">Seguir</button>
+      </div>
+
+      <div class="follow-item">
+        <div class="follow-item-left">
+          <img class="follow-avatar" src="https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png" alt="MLB">
+          <div>
+            <div style="font-weight:700; font-size:15px; display:flex; align-items:center; gap:4px;">
+              MLB
+              <svg class="verified-badge-gold" viewBox="0 0 24 24"><path d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.33 2.33 4.83-4.83 1.41 1.42-6.24 6.24z"/></svg>
+            </div>
+            <div style="color:var(--text-secondary); font-size:14px;">@MLB</div>
+          </div>
+        </div>
+        <button class="btn-follow">Seguir</button>
+      </div>
+
+      <div class="follow-item">
+        <div class="follow-item-left">
+          <img class="follow-avatar" src="https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png" alt="CoreB">
+          <div>
+            <div style="font-weight:700; font-size:15px;">✨ CoreB/Co...</div>
+            <div style="color:var(--text-secondary); font-size:14px;">@HRcoolb</div>
+          </div>
+        </div>
+        <button class="btn-follow">Seguir</button>
+      </div>
+
+      <a class="link-more" href="#">Mostrar más</a>
+    </div>
+
+    <!-- Enlaces footer exactos -->
+    <div class="footer-links">
+      <a href="#">Términos</a>
+      <a href="#">Privacidad</a>
+      <a href="#">Cookies</a>
+      <a href="#">Accesibilidad</a>
+      <a href="#">Información sobre anuncios</a>
+      <a href="#">Más opciones ···</a>
+      <div style="margin-top:4px;">© 2026 X Corp. / RadarStream</div>
+    </div>
+  </aside>
+
+  <!-- Botones flotantes inferiores derechos de la captura -->
+  <div class="floating-tools">
+    <div class="btn-float-circle" title="Grok / Tools">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 14.5h-2v-2h2v2zm0-4h-2V7h2v5.5z"/></svg>
+    </div>
+    <div class="btn-float-circle" title="Mensajes">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M1.998 5.5c0-1.381 1.119-2.5 2.5-2.5h15c1.381 0 2.5 1.119 2.5 2.5v13c0 1.381-1.119 2.5-2.5 2.5h-15c-1.381 0-2.5-1.119-2.5-2.5v-13zm2.5-.5c-.276 0-.5.224-.5.5v2.764l8 3.638 8-3.636V5.5c0-.276-.224-.5-.5-.5h-15zm15.5 5.463l-7.56 3.437c-.281.127-.6.127-.88 0L3.998 10.463V18.5c0 .276.224.5.5.5h15c.276 0 .5-.224.5-.5v-8.037z"/></svg>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const socket = io();
+  const tweetsFeed = document.getElementById('tweetsFeed');
+  const newPostsBanner = document.getElementById('newPostsBanner');
+  const composeText = document.getElementById('composeText');
+  const btnPost = document.getElementById('btnPost');
+
+  // Habilitar botón al escribir
+  composeText.addEventListener('input', () => {
+    btnPost.disabled = composeText.value.trim().length === 0;
+  });
+
+  // Formato relativo de tiempo idéntico a X (2h, 45m, 12s, 1d)
+  function formatRelativeTime(ts) {
+    if (!ts) return 'hace 1m';
+    const diff = Math.floor((Date.now() - ts) / 1000);
+    if (diff < 60) return `${diff}s`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+    return `${Math.floor(diff / 86400)}d`;
+  }
+
+  // Renderizar un tweet HTML idéntico a X con las 6 acciones
+  function createTweetHtml(post) {
+    const isVideo = post.media_url && post.media_url.endsWith('.mp4');
+    const mediaHtml = isVideo ? `
+      <div class="tweet-media-box">
+        <video class="tweet-video-player" src="${post.media_url}" controls playsinline poster="${post.thumbnail_url || ''}" preload="metadata"></video>
+      </div>
+    ` : (post.thumbnail_url ? `
+      <div class="tweet-media-box">
+        <img class="tweet-image-preview" src="${post.thumbnail_url}" alt="Reporte RadarStream">
+      </div>
+    ` : '');
+
+    // Formatear texto con hashtags y menciones coloreadas
+    const formattedText = (post.post_text || '')
+      .replace(/(#\w+)/g, '<span class="tweet-hashtag">$1</span>')
+      .replace(/(@\w+)/g, '<span class="tweet-hashtag">$1</span>');
+
+    return `
+      <article class="tweet-card" id="post-${post.id}">
+        <div class="tweet-avatar-col">
+          <img class="tweet-avatar" src="${post.avatar_url || 'https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png'}" alt="${post.streamer_name || post.slug}" onerror="this.src='https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png'">
+        </div>
+        <div class="tweet-content-col">
+          <div class="tweet-header">
+            <div class="tweet-meta">
+              <span class="author-name">RadarStream</span>
+              <svg class="verified-badge" viewBox="0 0 24 24"><path d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.33 2.33 4.83-4.83 1.41 1.42-6.24 6.24z"/></svg>
+              <span class="author-handle">@RadarStream</span>
+              <span class="dot-sep">·</span>
+              <span class="tweet-time">${formatRelativeTime(post.created_at)}</span>
+            </div>
+            <button class="tweet-more-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+          </div>
+
+          <div class="tweet-text">${formattedText}</div>
+
+          ${mediaHtml}
+
+          <!-- 6 Botones de acción exactos de X -->
+          <div class="tweet-actions-row">
+            <!-- 1. Reply -->
+            <button class="action-btn action-reply" title="Responder">
+              <svg viewBox="0 0 24 24"><path d="M1.751 10c0-4.42 3.584-8 8.005-8h4.366c4.49 0 8.129 3.64 8.129 8.13 0 2.96-1.607 5.68-4.196 7.11l-1.102.61.424 1.18c.552 1.54.088 3.26-1.186 4.34-1.077.91-2.527 1.21-3.876.8-1.52-.46-2.58-1.85-2.58-3.44v-.73l-.68-.27c-4.45-1.78-7.5-6.07-7.5-10.73zm8.005-6c-3.317 0-6.005 2.69-6.005 6 0 3.8 2.56 7.33 6.27 8.78l1.73.68v1.85c0 .64.43 1.19 1.04 1.38.56.17 1.15.04 1.6-.34.52-.44.71-1.14.48-1.78l-.87-2.43 2.27-1.26c2.14-1.18 3.47-3.44 3.47-5.91 0-3.38-2.74-6.13-6.129-6.13H9.756z"/></svg>
+              <span>${post.replies_count || 4}</span>
+            </button>
+
+            <!-- 2. Repost -->
+            <button class="action-btn action-repost" title="Repostear">
+              <svg viewBox="0 0 24 24"><path d="M4.5 3.88l4.432 4.14-1.364 1.46L5.5 7.55V16c0 1.1.896 2 2 2H13v2H7.5c-2.209 0-4-1.79-4-4V7.55L1.432 9.48.068 8.02 4.5 3.88zM16.5 20.12l-4.432-4.14 1.364-1.46 2.068 1.93V8c0-1.1-.896-2-2-2H11V4h5.5c2.209 0 4 1.79 4 4v8.45l2.068-1.93 1.364 1.46-4.432 4.14z"/></svg>
+              <span>${post.reposts_count || 18}</span>
+            </button>
+
+            <!-- 3. Like -->
+            <button class="action-btn action-like" title="Me gusta" onclick="toggleLike('${post.id}', this)">
+              <svg viewBox="0 0 24 24"><path d="M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.805 1.09-.806-1.09C9.984 6.01 8.526 5.44 7.304 5.5c-2.415.11-4.3 2.03-4.3 4.46 0 3.03 2.72 5.92 6.096 8.87 1.08.94 2.19 1.83 2.9 2.42.71-.59 1.82-1.48 2.9-2.42 3.376-2.95 6.096-5.84 6.096-8.87 0-2.43-1.885-4.35-4.3-4.46zm-4.695 14.8c-.28 0-.5-.11-.7-.27-.69-.58-1.77-1.44-2.82-2.36-3.15-2.76-5.48-5.32-5.48-7.71 0-1.39.99-2.58 2.37-2.64 1.01-.05 2.14.49 2.99 1.64l1.64 2.22 1.64-2.22c.85-1.15 1.98-1.69 2.99-1.64 1.38.06 2.37 1.25 2.37 2.64 0 2.39-2.33 4.95-5.48 7.71-1.05.92-2.13 1.78-2.82 2.36-.2.16-.42.27-.7.27z"/></svg>
+              <span class="like-count">${post.likes_count || 113}</span>
+            </button>
+
+            <!-- 4. Views -->
+            <button class="action-btn action-views" title="Vistas">
+              <svg viewBox="0 0 24 24"><path d="M8.75 21V3h2v18h-2zM18 21V8.5h2V21h-2zM4 21l.004-10h2L6 21H4zm9.248 0v-7h2v7h-2z"/></svg>
+              <span>${post.views_count ? (post.views_count > 1000 ? (post.views_count / 1000).toFixed(1) + ' mil' : post.views_count) : '1 mil'}</span>
+            </button>
+
+            <!-- 5. Bookmark -->
+            <button class="action-btn action-bookmark" title="Guardar">
+              <svg viewBox="0 0 24 24"><path d="M4 4.5C4 3.12 5.119 2 6.5 2h11C18.881 2 20 3.12 20 4.5v18.44l-8-5.71-8 5.71V4.5zM6.5 4c-.276 0-.5.22-.5.5v14.56l6-4.29 6 4.29V4.5c0-.28-.224-.5-.5-.5h-11z"/></svg>
+            </button>
+
+            <!-- 6. Share -->
+            <button class="action-btn action-share" title="Compartir">
+              <svg viewBox="0 0 24 24"><path d="M12 2.59l5.7 5.7-1.41 1.42L13 6.41V16h-2V6.41L7.71 9.71 6.3 8.29 12 2.59zM21 15l-.02 3.51c0 1.38-1.12 2.49-2.5 2.49H5.5C4.11 21.01 3 19.9 3 18.51V15h2v3.5c0 .28.22.5.5.5h12.98c.28 0 .5-.22.5-.5L19 15h2z"/></svg>
+            </button>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  // Cargar publicaciones iniciales del servidor
+  async function loadFeed() {
+    try {
+      const res = await fetch('/api/v1/feed');
+      const data = await res.json();
+      if (Array.isArray(data.posts) && data.posts.length > 0) {
+        tweetsFeed.innerHTML = data.posts.map(p => createTweetHtml(p)).join('');
+      } else {
+        // Post estático inicial con video demo si aún no se generaron
+        tweetsFeed.innerHTML = `
+          <article class="tweet-card">
+            <div class="tweet-avatar-col">
+              <div class="avatar-user" style="width:40px;height:40px;background:#1d9bf0;color:#fff;">R</div>
+            </div>
+            <div class="tweet-content-col">
+              <div class="tweet-header">
+                <div class="tweet-meta">
+                  <span class="author-name">RadarStream</span>
+                  <svg class="verified-badge" viewBox="0 0 24 24"><path d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.33 2.33 4.83-4.83 1.41 1.42-6.24 6.24z"/></svg>
+                  <span class="author-handle">@RadarStream</span>
+                  <span class="dot-sep">·</span>
+                  <span class="tweet-time">2h</span>
+                </div>
+                <button class="tweet-more-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+              </div>
+
+              <div class="tweet-text">📡 <b>RadarStream Feed Privado Activo</b>
+
+El motor 24/7 está vigilando 63 canales de Kick y Twitch con política de <b>primera emisión limpia</b>. En cuanto un canal finalice directo, verás aquí su post exacto con video HD, veredicto y seguidores ganados.
+
+Puedes pulsar <span class="tweet-hashtag" onclick="triggerSimulatePost()" style="cursor:pointer">⚡ Simular Post Bot</span> para verificar cómo se ve un informe completo con video.</div>
+
+              <div class="tweet-actions-row">
+                <button class="action-btn action-reply"><svg viewBox="0 0 24 24"><path d="M1.751 10c0-4.42 3.584-8 8.005-8h4.366c4.49 0 8.129 3.64 8.129 8.13 0 2.96-1.607 5.68-4.196 7.11l-1.102.61.424 1.18c.552 1.54.088 3.26-1.186 4.34-1.077.91-2.527 1.21-3.876.8-1.52-.46-2.58-1.85-2.58-3.44v-.73l-.68-.27c-4.45-1.78-7.5-6.07-7.5-10.73zm8.005-6c-3.317 0-6.005 2.69-6.005 6 0 3.8 2.56 7.33 6.27 8.78l1.73.68v1.85c0 .64.43 1.19 1.04 1.38.56.17 1.15.04 1.6-.34.52-.44.71-1.14.48-1.78l-.87-2.43 2.27-1.26c2.14-1.18 3.47-3.44 3.47-5.91 0-3.38-2.74-6.13-6.129-6.13H9.756z"/></svg> 4</button>
+                <button class="action-btn action-repost"><svg viewBox="0 0 24 24"><path d="M4.5 3.88l4.432 4.14-1.364 1.46L5.5 7.55V16c0 1.1.896 2 2 2H13v2H7.5c-2.209 0-4-1.79-4-4V7.55L1.432 9.48.068 8.02 4.5 3.88zM16.5 20.12l-4.432-4.14 1.364-1.46 2.068 1.93V8c0-1.1-.896-2-2-2H11V4h5.5c2.209 0 4 1.79 4 4v8.45l2.068-1.93 1.364 1.46-4.432 4.14z"/></svg> 18</button>
+                <button class="action-btn action-like" onclick="toggleLike('welcome', this)"><svg viewBox="0 0 24 24"><path d="M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.805 1.09-.806-1.09C9.984 6.01 8.526 5.44 7.304 5.5c-2.415.11-4.3 2.03-4.3 4.46 0 3.03 2.72 5.92 6.096 8.87 1.08.94 2.19 1.83 2.9 2.42.71-.59 1.82-1.48 2.9-2.42 3.376-2.95 6.096-5.84 6.096-8.87 0-2.43-1.885-4.35-4.3-4.46zm-4.695 14.8c-.28 0-.5-.11-.7-.27-.69-.58-1.77-1.44-2.82-2.36-3.15-2.76-5.48-5.32-5.48-7.71 0-1.39.99-2.58 2.37-2.64 1.01-.05 2.14.49 2.99 1.64l1.64 2.22 1.64-2.22c.85-1.15 1.98-1.69 2.99-1.64 1.38.06 2.37 1.25 2.37 2.64 0 2.39-2.33 4.95-5.48 7.71-1.05.92-2.13 1.78-2.82 2.36-.2.16-.42.27-.7.27z"/></svg> <span class="like-count">113</span></button>
+                <button class="action-btn action-views"><svg viewBox="0 0 24 24"><path d="M8.75 21V3h2v18h-2zM18 21V8.5h2V21h-2zM4 21l.004-10h2L6 21H4zm9.248 0v-7h2v7h-2z"/></svg> 1 mil</button>
+                <button class="action-btn action-bookmark"><svg viewBox="0 0 24 24"><path d="M4 4.5C4 3.12 5.119 2 6.5 2h11C18.881 2 20 3.12 20 4.5v18.44l-8-5.71-8 5.71V4.5zM6.5 4c-.276 0-.5.22-.5.5v14.56l6-4.29 6 4.29V4.5c0-.28-.224-.5-.5-.5h-11z"/></svg></button>
+                <button class="action-btn action-share"><svg viewBox="0 0 24 24"><path d="M12 2.59l5.7 5.7-1.41 1.42L13 6.41V16h-2V6.41L7.71 9.71 6.3 8.29 12 2.59zM21 15l-.02 3.51c0 1.38-1.12 2.49-2.5 2.49H5.5C4.11 21.01 3 19.9 3 18.51V15h2v3.5c0 .28.22.5.5.5h12.98c.28 0 .5-.22.5-.5L19 15h2z"/></svg></button>
+              </div>
+            </div>
+          </article>
+        `;
+      }
+    } catch (e) {
+      console.error('Error cargando feed:', e);
+    }
+  }
+
+  // Socket.IO: Recibir nuevo post en tiempo real del bot
+  socket.on('new_feed_post', (post) => {
+    console.log('[X-Feed] Nuevo post recibido en tiempo real:', post);
+    const postHtml = createTweetHtml(post);
+    tweetsFeed.insertAdjacentHTML('afterbegin', postHtml);
+    newPostsBanner.textContent = 'Mostrar nuevos posts';
+    newPostsBanner.style.display = 'block';
+  });
+
+  // Botón para simular post de prueba con video
+  async function triggerSimulatePost() {
+    try {
+      const res = await fetch('/api/v1/feed/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'westcol', platform: 'kick' })
+      });
+      const data = await res.json();
+      if (data.success && data.post) {
+        console.log('Simulación disparada:', data.post);
+        if (!document.getElementById(`post-${data.post.id}`)) {
+          tweetsFeed.insertAdjacentHTML('afterbegin', createTweetHtml(data.post));
+        }
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    } catch (e) {
+      alert('Error simulando post: ' + e.message);
+    }
+  }
+
+  // Like interactivo
+  async function toggleLike(postId, btn) {
+    const isLiked = btn.classList.toggle('liked');
+    const countSpan = btn.querySelector('.like-count');
+    if (countSpan) {
+      let current = parseInt(countSpan.textContent) || 0;
+      countSpan.textContent = isLiked ? (current + 1) : Math.max(0, current - 1);
+    }
+    try {
+      await fetch(`/api/v1/feed/${postId}/like`, { method: 'POST' });
+    } catch(e) {}
+  }
+
+  loadFeed();
+</script>
+
+</body>
+</html>

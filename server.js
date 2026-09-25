@@ -19,6 +19,15 @@ const io = new Server(server);
 app.set('trust proxy', true);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/reports', express.static(path.join(__dirname, 'data', 'reports')));
+
+app.get(['/x', '/feed'], (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'x-feed.html'));
+});
+
+global.__broadcastFeedPost = (post) => {
+    io.emit('new_feed_post', post);
+};
 
 const APIFY_TOKEN = process.env.APIFY_TOKEN || '';
 

@@ -140,10 +140,47 @@ function initDb() {
     db.exec(`ALTER TABLE streams ADD COLUMN ignore_reports INTEGER DEFAULT 0;`);
   } catch (e) {}
   try {
+    db.exec(`ALTER TABLE streams ADD COLUMN start_followers INTEGER;`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE streams ADD COLUMN end_followers INTEGER;`);
+  } catch (e) {}
+  try {
+    db.exec(`ALTER TABLE streams ADD COLUMN followers_diff INTEGER;`);
+  } catch (e) {}
+  try {
     db.exec(`ALTER TABLE channels ADD COLUMN initial_stream_handled INTEGER DEFAULT 0;`);
   } catch (e) {}
   try {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_audience_samples_stream ON audience_samples(stream_id, timestamp);`);
+  } catch (e) {}
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS feed_posts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        streamer_name TEXT,
+        avatar_url TEXT,
+        post_text TEXT NOT NULL,
+        media_type TEXT DEFAULT 'video',
+        media_url TEXT,
+        thumbnail_url TEXT,
+        duration_seconds INTEGER,
+        peak_viewers INTEGER,
+        avg_viewers INTEGER,
+        start_followers INTEGER,
+        end_followers INTEGER,
+        followers_diff INTEGER,
+        likes_count INTEGER DEFAULT 142,
+        reposts_count INTEGER DEFAULT 19,
+        replies_count INTEGER DEFAULT 7,
+        views_count INTEGER DEFAULT 2500,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_feed_posts_created ON feed_posts(created_at DESC);
+    `);
   } catch (e) {}
 }
 
@@ -189,14 +226,15 @@ const stmts = {
   `),
 
   createStream: db.prepare(`
-    INSERT INTO streams (id, broadcast_id, platform, slug, title, category, started_at, peak_viewers, last_live_at, status, ignore_reports)
-    VALUES (@id, @broadcast_id, @platform, @slug, @title, @category, @started_at, @peak_viewers, @last_live_at, 'live', coalesce(@ignore_reports, 0))
+    INSERT INTO streams (id, broadcast_id, platform, slug, title, category, started_at, peak_viewers, last_live_at, status, ignore_reports, start_followers, end_followers, followers_diff)
+    VALUES (@id, @broadcast_id, @platform, @slug, @title, @category, @started_at, @peak_viewers, @last_live_at, 'live', coalesce(@ignore_reports, 0), @start_followers, @end_followers, coalesce(@followers_diff, 0))
     ON CONFLICT(id) DO UPDATE SET
       broadcast_id = coalesce(excluded.broadcast_id, streams.broadcast_id),
       title = coalesce(excluded.title, streams.title),
       category = coalesce(excluded.category, streams.category),
       peak_viewers = max(streams.peak_viewers, excluded.peak_viewers),
       last_live_at = max(coalesce(streams.last_live_at, 0), coalesce(excluded.last_live_at, 0)),
+      end_followers = coalesce(excluded.end_followers, streams.end_followers),
       status = 'live'
   `),
 
@@ -218,8 +256,28 @@ const stmts = {
       last_live_at = coalesce(@last_live_at, last_live_at),
       first_offline_at = coalesce(@first_offline_at, first_offline_at),
       total_messages = @total_messages,
-      unique_chatters = @unique_chatters
+      unique_chatters = @unique_chatters,
+      end_followers = coalesce(@end_followers, end_followers),
+      followers_diff = coalesce(@followers_diff, CASE WHEN start_followers IS NOT NULL AND coalesce(@end_followers, end_followers) IS NOT NULL THEN (coalesce(@end_followers, end_followers) - start_followers) ELSE followers_diff END)
     WHERE id = @id
+  `),
+
+  insertFeedPost: db.prepare(`
+    INSERT INTO feed_posts (
+      id, session_id, platform, slug, streamer_name, avatar_url, post_text,
+      media_type, media_url, thumbnail_url, duration_seconds, peak_viewers, avg_viewers,
+      start_followers, end_followers, followers_diff, likes_count, reposts_count,
+      replies_count, views_count, created_at
+    ) VALUES (
+      @id, @session_id, @platform, @slug, @streamer_name, @avatar_url, @post_text,
+      @media_type, @media_url, @thumbnail_url, @duration_seconds, @peak_viewers, @avg_viewers,
+      @start_followers, @end_followers, @followers_diff, @likes_count, @reposts_count,
+      @replies_count, @views_count, @created_at
+    )
+  `),
+
+  getRecentFeedPosts: db.prepare(`
+    SELECT * FROM feed_posts ORDER BY created_at DESC LIMIT 50
   `),
 
   insertAudience: db.prepare(`

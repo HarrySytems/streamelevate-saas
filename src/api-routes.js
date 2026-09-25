@@ -112,4 +112,94 @@ router.get('/streamers/:slug/recent', (req, res) => {
   });
 });
 
+// GET /api/v1/feed - Publicaciones del clon de Twitter/X
+router.get('/feed', (req, res) => {
+  try {
+    const posts = stmts.getRecentFeedPosts.all();
+    res.json({ count: posts.length, posts });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/v1/feed/simulate - Disparar publicación de prueba
+router.post('/feed/simulate', (req, res) => {
+  try {
+    const { randomUUID } = require('node:crypto');
+    const slug = (req.body.slug || 'westcol').toLowerCase();
+    const platform = req.body.platform || 'kick';
+    const channel = stmts.getChannel.get(platform, slug) || { username: slug };
+    const now = Date.now();
+    
+    const peak = Number(req.body.peak_viewers) || Math.floor(45000 + Math.random() * 20000);
+    const avg = Number(req.body.avg_viewers) || Math.floor(peak * 0.72);
+    const durSec = 3 * 3600 + 42 * 60;
+    const startFoll = 4125000;
+    const diff = Math.floor(450 + Math.random() * 800);
+    const endFoll = startFoll + diff;
+    
+    const postText = [
+      `REPORTE DE EMISIÓN — ${slug.toUpperCase()} (${platform.toUpperCase()})`,
+      `Título: HABLANDO CLARO / ESPECIAL NOCTURNO`,
+      `Categoría: Just Chatting`,
+      `Duración: 3h 42m`,
+      `Pico de viewers: ${peak.toLocaleString('es-ES')}`,
+      `Media final observada: ${avg.toLocaleString('es-ES')}`,
+      `Horas vistas observadas: ${(Math.round(avg * 3.7)).toLocaleString('es-ES')}`,
+      `📈 Seguidores: +${diff.toLocaleString('es-ES')} (${startFoll.toLocaleString('es-ES')} ➔ ${endFoll.toLocaleString('es-ES')})`,
+      `Mensajes registrados: ${(Math.floor(18000 + Math.random() * 15000)).toLocaleString('es-ES')}`,
+      `Cuentas únicas que comentaron: ${(Math.floor(4200 + Math.random() * 3000)).toLocaleString('es-ES')}`,
+      `Cobertura de audiencia: 99.8%`,
+      'Media ponderada por tiempo. Audiencia concurrente; no son espectadores únicos.',
+      'Los recuentos de chat corresponden a mensajes recibidos; no demuestran uso de bots.'
+    ].join('\n');
+
+    const postData = {
+      id: randomUUID(),
+      session_id: `${platform}:${slug}:mock_${now}`,
+      platform,
+      slug,
+      streamer_name: channel.username || slug,
+      avatar_url: `/api/v1/streamers/${slug}/avatar`,
+      post_text: postText,
+      media_type: 'video',
+      media_url: `/reports/replay.mp4`,
+      thumbnail_url: `/reports/summary.png`,
+      duration_seconds: durSec,
+      peak_viewers: peak,
+      avg_viewers: avg,
+      start_followers: startFoll,
+      end_followers: endFoll,
+      followers_diff: diff,
+      likes_count: Math.floor(120 + Math.random() * 250),
+      reposts_count: Math.floor(25 + Math.random() * 60),
+      replies_count: Math.floor(12 + Math.random() * 30),
+      views_count: Math.floor(3200 + Math.random() * 8000),
+      created_at: now
+    };
+
+    stmts.insertFeedPost.run(postData);
+
+    if (typeof global.__broadcastFeedPost === 'function') {
+      global.__broadcastFeedPost(postData);
+    }
+
+    res.json({ success: true, post: postData });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/feed/:id/like - Dar like interactivo a un tweet
+router.post('/feed/:id/like', (req, res) => {
+  try {
+    const id = req.params.id;
+    db.prepare(`UPDATE feed_posts SET likes_count = likes_count + 1 WHERE id = ?`).run(id);
+    const post = db.prepare(`SELECT * FROM feed_posts WHERE id = ?`).get(id);
+    res.json({ success: true, likes_count: post ? post.likes_count : 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
