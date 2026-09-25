@@ -125,9 +125,9 @@ const { startCollector } = require('./src/collector');
 const { startReportWorker } = require('./src/report-worker');
 
 const PORT = process.env.PORT || 3050;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`====================================================`);
-    console.log(`[STREAM ELEVATE PRO] Servidor Activo en Puerto ${PORT}`);
+    console.log(`[STREAM ELEVATE PRO] Servidor Activo en 0.0.0.0:${PORT}`);
     console.log(`[API TELEMETRÍA] Endpoint: http://localhost:${PORT}/api/v1/health`);
     console.log(`====================================================`);
     startCollector();

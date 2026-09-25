@@ -23,12 +23,10 @@ echo "[2/6] Instalando herramientas del sistema y FFmpeg..."
 sudo apt-get update -y
 sudo apt-get install -y curl git ffmpeg build-essential
 
-# 3. Instalar Node.js 20 LTS
-echo "[3/6] Instalando Node.js 20 LTS..."
-if ! command -v node &> /dev/null; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-    sudo apt-get install -y nodejs
-fi
+# 3. Instalar Node.js 22 LTS (requerido por Puppeteer y better-sqlite3)
+echo "[3/6] Instalando Node.js 22 LTS..."
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
 node -v
 npm -v
 
