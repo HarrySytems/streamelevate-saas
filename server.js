@@ -19,7 +19,21 @@ const io = new Server(server);
 app.set('trust proxy', true);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use('/reports', express.static(path.join(__dirname, 'data', 'reports')));
+
+// Inicializar carpeta de reportes y archivos de muestra
+const reportsDir = path.join(__dirname, 'data', 'reports');
+if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir, { recursive: true });
+const sampleReplay = path.join(__dirname, 'public', 'sample-replay.mp4');
+const destReplay = path.join(reportsDir, 'replay.mp4');
+if (fs.existsSync(sampleReplay) && !fs.existsSync(destReplay)) {
+    try {
+        fs.copyFileSync(sampleReplay, destReplay);
+        const sampleSummary = path.join(__dirname, 'public', 'sample-summary.png');
+        const destSummary = path.join(reportsDir, 'summary.png');
+        if (fs.existsSync(sampleSummary)) fs.copyFileSync(sampleSummary, destSummary);
+    } catch(e) {}
+}
+app.use('/reports', express.static(reportsDir));
 
 app.get(['/x', '/feed'], (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'x-feed.html'));

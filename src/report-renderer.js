@@ -63,7 +63,7 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
       (process.platform === 'win32' && fs.existsSync(edge) ? edge : undefined);
     browser = await puppeteer.launch({ headless: true,
       ...(executablePath ? { executablePath } : {}),
-      args: ['--disable-dev-shm-usage', ...(process.env.RADAR_NO_SANDBOX === '1' ? ['--no-sandbox'] : [])]
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
