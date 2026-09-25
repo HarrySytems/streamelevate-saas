@@ -16,23 +16,6 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
   if (points.length < 2 || points.at(-1).t <= points[0].t) {
     throw new Error('No hay dos muestras temporales válidas para renderizar esta sesión');
   }
-  let peak = points[0];
-  for (const point of points) if (point.v > peak.v) peak = point;
-  const final = {
-    average: summary.avg_viewers,
-    peak: summary.peak_viewers,
-    peakTime: peak.t,
-    hoursWatched: summary.observed_viewer_hours,
-    coverage: summary.coverage_ratio ?? 0
-  };
-  const session = { ...stream, streamerName: stream.slug, platform: stream.platform, points };
-  const analysis = {
-    averageToPeakPercent: final.average === null || !final.peak ? null : final.average / final.peak * 100,
-    chat: { available: summary.total_messages > 0, messages: summary.total_messages,
-      uniqueAccounts: summary.unique_chatters,
-      messagesPerMinute: summary.observed_seconds > 0 ? summary.total_messages / (summary.observed_seconds / 60) : null,
-      coverage: null }
-  };
   const pngPath = path.join(outputDir, 'summary.png');
   const mp4Path = path.join(outputDir, 'replay.mp4');
   const tracePath = path.join(outputDir, 'frames.json');
@@ -49,20 +32,9 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
     await page.emulateTimezone(process.env.RADAR_TIMEZONE || 'America/Lima');
-    await page.setContent('<canvas width="1280" height="720"></canvas>');
-    for (const name of ['timeline.js', 'equalizer.js', 'canvas.js']) {
-      await page.addScriptTag({ path: path.join(__dirname, 'radar-template', name) });
-    }
-    await page.evaluate((session, final, analysis, timeZone) => {
-      const original = buildTimeline;
-      // The same immutable final figures feed JSON, text, image and every video frame.
-      buildTimeline = (...args) => {
-        const model = original(...args);
-        Object.assign(model.final, final);
-        return model;
-      };
-      window.prepare(session, { maxGapMs: 120000, timeZone }, analysis);
-    }, session, final, analysis, process.env.RADAR_TIMEZONE || 'America/Lima');
+    const html = fs.readFileSync(path.join(__dirname, '../public/radar-live.html'), 'utf8');
+    await page.setContent(html.replace('<head>', '<head><script>window.__RADAR_EXPORT__=true;</script>'));
+    await page.evaluate(payload => window.RadarExport.prepare(payload), { stream, samples, summary });
 
     encoder = spawn(mediaPaths().ffmpeg, [
       '-y', '-hide_banner', '-loglevel', 'error', '-f', 'image2pipe', '-vcodec', 'png',
@@ -81,7 +53,7 @@ async function renderReport({ stream, samples, gaps, summary, outputDir }, optio
     const trace = [];
     for (let frame = 0; frame < frames; frame++) {
       const result = await page.evaluate((frame, fps, seconds) => ({
-        metrics: window.draw(frame, fps, seconds),
+        metrics: window.RadarExport.drawFrame(frame, fps, seconds),
         png: document.querySelector('canvas').toDataURL('image/png').split(',')[1]
       }), frame, fps, seconds);
       trace.push(result.metrics);

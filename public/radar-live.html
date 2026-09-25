@@ -301,6 +301,8 @@
     const paramStreamer = urlParams.get('streamer') || urlParams.get('channel');
     let hasCustomParam = false;
 
+    const exportMode = window.__RADAR_EXPORT__ === true;
+    let exportTimeMs = 0;
     let currentSlug = 'westcol';
     let currentPlatform = 'kick';
 
@@ -336,7 +338,7 @@
     const ctx = canvas.getContext('2d');
 
     // Margins clásicos calibrados del diseño Westcol
-    const MARGIN = {
+    const LIVE_MARGIN = {
       left: 100,
       right: 60,
       top: 130,
@@ -437,10 +439,14 @@
     // DIBUJADO DE LA GRÁFICA PURA (DISEÑO ORIGINAL WESTCOL)
     // ==========================================
     function draw() {
-      requestAnimationFrame(draw);
+      if (!exportMode) requestAnimationFrame(draw);
 
+      // Evitar que el estado de texto del fotograma anterior desplace la cabecera.
+      ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left'; ctx.shadowBlur = 0;
       const W = canvas.width;
       const H = canvas.height;
+      const reportLayout = exportMode;
+      const MARGIN = reportLayout ? { left: 90, right: 390, top: 150, bottom: 470 } : LIVE_MARGIN;
       const isKick = (currentPlatform === 'kick');
       const neon = isKick ? '#53fc18' : '#a970ff';
       const areaColor = isKick ? 'rgba(83, 252, 24, 0.35)' : 'rgba(169, 112, 255, 0.35)';
@@ -452,10 +458,14 @@
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, W, H);
 
+      if (reportLayout) {
+        ctx.fillStyle = '#101820'; ctx.fillRect(35, 120, 885, 405);
+        ctx.strokeStyle = '#24313c'; ctx.lineWidth = 1; ctx.strokeRect(35.5, 120.5, 885, 405);
+      }
       // 2. Líneas de Cuadrícula Sutiles (Estilo broadcast)
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
       ctx.lineWidth = 1;
-      for (let x = MARGIN.left; x <= W - MARGIN.right; x += 55) {
+      for (let x = MARGIN.left; x <= W - MARGIN.right; x += reportLayout ? (W - MARGIN.right - MARGIN.left) / 18 : 55) {
         ctx.beginPath();
         ctx.moveTo(x, MARGIN.top);
         ctx.lineTo(x, MARGIN.bottom);
@@ -542,7 +552,7 @@
       ctx.fill();
       ctx.fillStyle = '#ffffff';
       ctx.font = '800 11px Arial';
-      ctx.fillText(isLive ? '🔴 EN VIVO' : 'OFFLINE', 123, 78);
+      ctx.fillText(isLive ? '🔴 EN VIVO' : (exportMode ? 'RESUMEN' : 'OFFLINE'), 123, 78);
 
       // Título y Categoría
       ctx.fillStyle = '#94a3b8';
@@ -555,6 +565,12 @@
         titleDisplay += '…';
       }
       ctx.fillText(titleDisplay, 200, 78);
+      if (reportLayout) {
+        ctx.font = '11px Consolas, monospace';
+        const d = currentStreamerData;
+        const duration = Math.max(0, d.duration_seconds ?? (d.ended_at - d.started_at) / 1000);
+        ctx.fillText(`${category.toUpperCase()} • INICIO: ${new Date(d.started_at).toLocaleTimeString('es-ES', {hour:'2-digit',minute:'2-digit'})} • DURACIÓN: ${Math.floor(duration/3600)}H ${Math.floor(duration%3600/60)}M`, 115, 101);
+      }
 
       // Marca RADARSTREAM (Derecha Arriba)
       ctx.fillStyle = neon;
@@ -563,14 +579,14 @@
       ctx.fillText('RADARSTREAM', W - 60, 52);
       ctx.fillStyle = '#64748b';
       ctx.font = '700 11px Arial';
-      ctx.fillText('LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 70);
+      ctx.fillText(exportMode ? 'RESUMEN DE EMISIÓN • HD VIEW' : 'LIVE TELEMETRY ENGINE • HD VIEW', W - 60, 70);
 
       // 6. Preparar Escala de Datos de la Gráfica
       if (densePoints.length < 2) return;
 
       const firstT = densePoints[0].t;
       const lastT = densePoints[densePoints.length - 1].t;
-      const timeSpan = Math.max(1000, lastT - firstT);
+      const timeSpan = Math.max(1, lastT - firstT);
 
       // Buscar pico máximo para escalar eje Y dinámico
       let maxV = -Infinity;
@@ -588,9 +604,9 @@
       // 7. Eje Y y Guías Horizontales
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.font = '600 12px Arial';
+      ctx.font = reportLayout ? '9px Consolas, monospace' : '600 12px Arial';
       ctx.fillStyle = '#64748b';
-      const ySteps = 5;
+      const ySteps = reportLayout ? 11 : 5;
       for (let i = 0; i <= ySteps; i++) {
         const val = Math.round((yCeil / ySteps) * i);
         const yPos = MARGIN.bottom - (i / ySteps) * graphH;
@@ -607,21 +623,22 @@
       // 8. Eje X (Horarios)
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      const xSteps = 6;
+      const xSteps = reportLayout ? 18 : 6;
       for (let i = 0; i <= xSteps; i++) {
         const tVal = firstT + (timeSpan / xSteps) * i;
         const xPos = MARGIN.left + (i / xSteps) * graphW;
         const timeStr = new Date(tVal).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-        ctx.fillText(timeStr, xPos, MARGIN.bottom + 10);
+        if (reportLayout) {
+          ctx.save(); ctx.translate(xPos, MARGIN.bottom + 12); ctx.rotate(-Math.PI / 4);
+          ctx.textAlign = 'right'; ctx.fillText(timeStr, 0, 0); ctx.restore();
+        } else ctx.fillText(timeStr, xPos, MARGIN.bottom + 10);
       }
 
       // 9. Filtrar puntos visibles según el modo (Live o Replay)
-      let activeLength = densePoints.length;
-      if (currentMode === 'replay') {
-        activeLength = Math.max(2, Math.floor(replayProgress * densePoints.length));
-      }
-      const visiblePoints = densePoints.slice(0, activeLength);
-      if (visiblePoints.length < 2) return;
+      const progress = currentMode === 'replay' ? Math.max(0, Math.min(1, replayProgress)) : 1;
+      const headTime = progress === 1 ? lastT : firstT + progress * (lastT - firstT);
+      const visiblePoints = densePoints.filter(p => p.t < headTime);
+      visiblePoints.push({ t: headTime, v: currentInterpolator(headTime) });
 
       // Suavizado e interpolación de espectadores en vivo (Sin mutar array de datos original)
       if (currentMode === 'live' && targetViewerCount > 0) {
@@ -633,40 +650,63 @@
       const hY = getY(hV);
 
       // ==========================================
-      // 10. BARRAS DE ECUALIZADOR NEÓN (Debajo de la curva - Estilo Westcol Original)
-      // ==========================================
+      // 10. BARRAS DE ECUALIZADOR NEÓN (Conexión Hilo por Hilo a la Curva)
+      // ========================================== 
+      let barsDrawn = 0;
       if (showEqualizerBars) {
-        const barStep = 8;
-        const now = performance.now() * 0.004;
+        const barW = 3;
+        const barStep = 7;
+        const now = (exportMode ? exportTimeMs : performance.now()) * 0.004;
         const chatSpeed = currentStreamerData?.chat_velocity?.msgs_per_min || 0;
         const chatBoost = Math.min(1.5, 1 + (chatSpeed / 250));
+        // Límite estricto para que ninguna barra sobrepase el cabezal ni el margen derecho
+        const maxBarX = Math.min(hX - barW, (W - MARGIN.right) - barW);
 
-        for (let bx = MARGIN.left; bx <= hX; bx += barStep) {
+        for (let bx = MARGIN.left; bx <= maxBarX; bx += barStep) {
           const normX = Math.max(0, Math.min(1, (bx - MARGIN.left) / graphW));
           const targetT = firstT + normX * timeSpan;
           const pVal = currentInterpolator ? currentInterpolator(targetT) : 0;
           const baseY = getY(pVal);
 
-          // Efecto de pulso senoidal orgánico estilo analizador de espectro de audio reactivo a chat
-          const wave = (Math.sin(now * 2.2 + bx * 0.08) * 0.5 + 0.5) * 16 * chatBoost;
           const maxAvail = Math.max(0, MARGIN.bottom - baseY);
-          if (maxAvail <= 1.5) continue; // Cerca de cero no dibuja barra innecesaria
+          if (maxAvail <= 1.5) continue;
 
-          // La barra respeta el espacio y nunca sobrepasa la curva neón (Corrección Codex)
-          const barH = Math.min(maxAvail, maxAvail * 0.45 + wave);
-          if (barH <= 1.5) continue;
+          // Pulso senoidal orgánico estilo ecualizador de audio reactivo
+          const pulse = (Math.sin(now * 2.2 + bx * 0.08) * 0.5 + 0.5);
+          const barH = Math.max(3, Math.min(maxAvail, maxAvail * (0.65 + pulse * 0.20 * chatBoost)));
+          const barTop = MARGIN.bottom - barH;
 
-          const barGrad = ctx.createLinearGradient(0, MARGIN.bottom - barH, 0, MARGIN.bottom);
-          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.45)' : 'rgba(169, 112, 255, 0.45)');
+          // 1. HILO TÉCNICO VERTICAL CONECTOR DIRECTO A LA CURVA ("Hilo por Hilo")
+          if (barTop > baseY + 1) {
+            ctx.save();
+            ctx.strokeStyle = isKick ? 'rgba(83, 252, 24, 0.40)' : 'rgba(169, 112, 255, 0.40)';
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.moveTo(bx + barW / 2, barTop);
+            ctx.lineTo(bx + barW / 2, baseY);
+            ctx.stroke();
+
+            // Nodo de anclaje luminoso en la curva
+            ctx.fillStyle = isKick ? 'rgba(187, 247, 208, 0.95)' : 'rgba(243, 232, 255, 0.95)';
+            ctx.beginPath();
+            ctx.arc(bx + barW / 2, baseY, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          // 2. CUERPO DE LA BARRA CON GRADIENTE TRANSLÚCIDO NEÓN
+          const barGrad = ctx.createLinearGradient(0, barTop, 0, MARGIN.bottom);
+          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.50)' : 'rgba(169, 112, 255, 0.50)');
           barGrad.addColorStop(0.5, isKick ? 'rgba(83, 252, 24, 0.20)' : 'rgba(169, 112, 255, 0.20)');
           barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
           ctx.fillStyle = barGrad;
-          ctx.fillRect(bx, MARGIN.bottom - barH, 4, barH);
+          ctx.fillRect(bx, barTop, barW, barH);
+          barsDrawn++;
 
-          // Puntero luminoso en la punta de cada barra
-          ctx.fillStyle = isKick ? 'rgba(187, 247, 208, 0.8)' : 'rgba(243, 232, 255, 0.8)';
-          ctx.fillRect(bx, MARGIN.bottom - barH, 4, 1.5);
+          // 3. PUNTERO / CABEZAL LUMINOSO EN LA CIMA DE CADA BARRA
+          ctx.fillStyle = isKick ? 'rgba(187, 247, 208, 0.95)' : 'rgba(243, 232, 255, 0.95)';
+          ctx.fillRect(bx, barTop, barW, 1.5);
         }
       }
 
@@ -695,62 +735,81 @@
       // ==========================================
       ctx.save();
       ctx.strokeStyle = neon;
-      ctx.lineWidth = 3.5;
+      ctx.lineWidth = 0.9;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 16;
+      ctx.shadowBlur = 12;
       ctx.beginPath();
       visiblePoints.forEach((p, idx) => {
         const isLast = (idx === visiblePoints.length - 1);
+        const px = isLast ? hX : getX(p.t);
         const py = isLast ? hY : getY(p.v);
-        if (idx === 0) ctx.moveTo(getX(p.t), py);
-        else ctx.lineTo(getX(p.t), py);
+        if (idx === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
       });
       ctx.stroke();
       ctx.restore();
 
-      // Trazo interior blanco nítido
+      // Trazo interior de alta definición para nitidez broadcast
       ctx.save();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = isKick ? 'rgba(220, 252, 231, 0.90)' : 'rgba(245, 243, 255, 0.90)';
+      ctx.lineWidth = 0.6;
       ctx.beginPath();
       visiblePoints.forEach((p, idx) => {
         const isLast = (idx === visiblePoints.length - 1);
+        const px = isLast ? hX : getX(p.t);
         const py = isLast ? hY : getY(p.v);
-        if (idx === 0) ctx.moveTo(getX(p.t), py);
-        else ctx.lineTo(getX(p.t), py);
+        if (idx === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
       });
       ctx.stroke();
       ctx.restore();
 
       // ==========================================
-      // 13. AGUJA / PLAYHEAD EN LA PUNTA DE LA GRÁFICA
+      // 13. AGUJA Y CABEZAL LUMINOSO (PLAYHEAD)
       // ==========================================
-      // Halo pulsante exterior
+      // Guía vertical técnica punteada desde la aguja hasta el eje inferior
+      ctx.save();
+      ctx.strokeStyle = isKick ? 'rgba(83, 252, 24, 0.40)' : 'rgba(169, 112, 255, 0.40)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(hX, hY);
+      ctx.lineTo(hX, MARGIN.bottom);
+      ctx.stroke();
+      ctx.restore();
+
+      // Halo exterior pulsante neón
       ctx.save();
       ctx.strokeStyle = neon;
       ctx.lineWidth = 2;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 15;
+      ctx.shadowBlur = 14;
       ctx.beginPath();
-      ctx.arc(hX, hY, 8, 0, Math.PI * 2);
+      ctx.arc(hX, hY, 7, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
 
-      // Núcleo blanco
-      ctx.fillStyle = '#ffffff';
+      // Anillo interior neón
+      ctx.fillStyle = neon;
       ctx.beginPath();
       ctx.arc(hX, hY, 4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Badge flotante sobre la punta con el número exacto (con media final fija desde el principio del replay)
-      let badgeText = `${Math.round(hV).toLocaleString()} VIEWERS`;
+      // Núcleo blanco nítido
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(hX, hY, 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Badge flotante sobre la punta con el número exacto
+      let badgeText = `${Math.round(hV).toLocaleString('es-ES', {useGrouping:'always'})} VIEWERS`;
       if (currentMode === 'replay') {
         const avg = currentStreamerData?.avg_viewers;
         const hasValidAvg = avg !== null && avg !== undefined && Number.isFinite(Number(avg));
         if (replayProgress >= 1) {
-          badgeText = `FINAL: ${Math.round(hV).toLocaleString()}${hasValidAvg ? ` • MEDIA: ${Math.round(avg).toLocaleString()}` : ''}`;
+          badgeText = `FINAL: ${Math.round(hV).toLocaleString('es-ES', {useGrouping:'always'})}${hasValidAvg ? ` • MEDIA: ${Math.round(avg).toLocaleString('es-ES', {useGrouping:'always'})}` : ''}`;
         } else if (hasValidAvg) {
-          badgeText = `${Math.round(hV).toLocaleString()} VIEWERS • MEDIA: ${Math.round(avg).toLocaleString()}`;
+          badgeText = `${Math.round(hV).toLocaleString('es-ES', {useGrouping:'always'})} VIEWERS • MEDIA: ${Math.round(avg).toLocaleString('es-ES', {useGrouping:'always'})}`;
         }
       }
       ctx.font = '900 13px Arial';
@@ -776,6 +835,61 @@
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(badgeText, bX + bW / 2, bY + bH / 2);
+      let panelValues = null;
+      if (reportLayout) panelValues = drawFinalStatistics(currentStreamerData, currentSamples, neon);
+      return { design: 'radar-live-equalizer', progress, tracerX: hX, chartRight: W - MARGIN.right,
+        timestamp: head.t, viewers: head.v, average: currentStreamerData?.avg_viewers, barsDrawn, panelValues, curveWidth: 0.9 };
+
+    }
+
+    function drawFinalStatistics(d, samples, neon) {
+      // Solo presenta los valores del resumen; nunca recalcula ni altera sus estadísticas.
+      const valid = v => typeof v === 'number' && Number.isFinite(v);
+      const num = (v, digits=0) => valid(v) ? v.toLocaleString('es-ES', {useGrouping:'always',minimumFractionDigits:digits,maximumFractionDigits:digits}) : 'Sin medición';
+      const duration = Math.max(0, d.duration_seconds ?? (d.ended_at-d.started_at)/1000);
+      const peakSample = samples.reduce((peak,p) => !peak || p.viewers > peak.viewers ? p : peak, null);
+      const peakTime = peakSample && peakSample.viewers === d.peak_viewers
+        ? new Date(peakSample.timestamp).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}) : null;
+      const ratio = valid(d.avg_viewers) && d.peak_viewers > 0 ? d.avg_viewers / d.peak_viewers * 100 : null;
+      const panelValues = {peak:d.peak_viewers,peakTime,hours:d.observed_viewer_hours,ratio,
+        messages:d.total_messages,chatters:d.unique_chatters,average:d.avg_viewers};
+      const text = (value,x,y,size,color='#f3f7fa',weight=700) => {
+        ctx.fillStyle=color; ctx.font=`${weight} ${size}px Arial`; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+        ctx.fillText(value,x,y);
+      };
+      const box = (y,h) => {
+        ctx.fillStyle='#111b24';ctx.fillRect(940,y,305,h);
+        ctx.strokeStyle='#263440';ctx.lineWidth=1;ctx.strokeRect(940.5,y+0.5,305,h);
+      };
+      ctx.save();
+      box(120,80);
+      text('PICO DE AUDIENCIA OBSERVADO',954,142,10,'#94a3b8');
+      text(num(d.peak_viewers),954,171,27);
+      text(peakTime ? `${peakTime} • MÁXIMO REGISTRADO` : 'MÁXIMO REGISTRADO',954,189,10,neon);
+      box(210,80);
+      text('HORAS VISTAS OBSERVADAS',954,232,10,'#94a3b8');
+      text(num(d.observed_viewer_hours,1),954,261,27);
+      text(`COBERTURA DE AUDIENCIA: ${num(valid(d.coverage_ratio)?d.coverage_ratio*100:null,1)}%`,954,279,10,'#94a3b8');
+      box(300,80);
+      text('RELACIÓN MEDIA / PICO',954,322,10,'#94a3b8');
+      text(valid(ratio)?num(ratio,1)+'%':'Sin medición',954,351,27,'#34d399');
+      text(`DURACIÓN: ${Math.floor(duration/3600)}H ${Math.floor(duration%3600/60)}M • NO ES RETENCIÓN`,954,369,10,'#94a3b8');
+      box(390,135);
+      text('CHATTERS ÚNICOS Y MENSAJES',954,413,10,neon);
+      text(num(d.unique_chatters)+' CUENTAS',954,443,23);
+      text(num(d.total_messages)+' MENSAJES REGISTRADOS',954,468,11);
+      text('Recuentos del chat capturado',954,492,10,'#94a3b8',400);
+      text('No permite determinar un porcentaje de bots',954,510,10,'#94a3b8',400);
+      ctx.fillStyle='#0e1720';ctx.fillRect(35,540,1210,142);
+      ctx.strokeStyle='#263440';ctx.strokeRect(35.5,540.5,1210,142);
+      ctx.textAlign='center';ctx.fillStyle=neon;ctx.font='700 12px Arial';
+      ctx.fillText('PROMEDIO DE AUDIENCIA OBSERVADA • RESULTADO FINAL',640,568);
+      ctx.font='900 54px Arial';ctx.fillStyle='#f3f7fa';
+      ctx.fillText(num(d.avg_viewers)+(valid(d.avg_viewers)?' ESPECTADORES':''),640,626);
+      ctx.font='10px Arial';ctx.fillStyle='#94a3b8';
+      ctx.fillText(`COBERTURA: ${num(valid(d.coverage_ratio)?d.coverage_ratio*100:null,1)}% • CURVA INTERPOLADA ENTRE MUESTRAS • BARRAS DECORATIVAS`,640,659);
+      ctx.restore();
+      return panelValues;
     }
 
     // ==========================================
@@ -926,6 +1040,27 @@
       loadStreamerData(currentSlug, currentPlatform);
     }
 
+    // Exporta el mismo canvas, con reloj determinista y sin consultar la API.
+    if (exportMode) window.RadarExport = {
+      prepare({ stream, samples, summary }) {
+        currentSlug = stream.slug; currentPlatform = stream.platform;
+        currentStreamerData = { ...stream, ...summary, is_live: false };
+        currentSamples = samples;
+        const cleaned = cleanSamples(samples);
+        currentInterpolator = createPchipInterpolator(cleaned);
+        const first = cleaned[0].t, last = cleaned.at(-1).t;
+        const times = new Set(cleaned.map(p => p.t));
+        for (let i = 0; i <= 1120; i++) times.add(first + (last - first) * i / 1120);
+        densePoints = [...times].sort((a,b) => a-b).map(t => ({t, v: currentInterpolator(t)}));
+        currentMode = 'replay'; showEqualizerBars = true; targetViewerCount = 0;
+      },
+      drawFrame(frame, fps, seconds) {
+        replayProgress = frame / (Math.round(fps * seconds) - 1);
+        exportTimeMs = frame * 1000 / fps;
+        return draw();
+      }
+    };
+    if (!exportMode) {
     // Inicializar
     loadStreamersList().then(() => {
       loadStreamerData(currentSlug, currentPlatform);
@@ -947,6 +1082,7 @@
 
     // Iniciar bucle de dibujo a 60fps
     requestAnimationFrame(draw);
+    }
   </script>
 </body>
 </html>

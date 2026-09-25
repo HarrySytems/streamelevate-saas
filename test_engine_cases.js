@@ -226,6 +226,15 @@ test('integración: render real, validación completa y recuperación de cola', 
     assert.equal(trace[0].progress,0);
     assert.equal(trace.at(-1).progress,1);
     assert.equal(trace.at(-1).tracerX,trace.at(-1).chartRight);
+    assert.equal(trace[0].tracerX,90);
+    assert.ok(trace.at(-2).tracerX < trace.at(-1).chartRight);
+    assert.ok(trace.every((f,i)=>i===0 || f.tracerX>trace[i-1].tracerX));
+    assert.ok(trace.every(f=>f.design==='radar-live-equalizer'));
+    assert.ok(trace.every(f=>f.panelValues.average===1045 && f.panelValues.peak===1090));
+    assert.equal(trace[0].panelValues.chatters,0);
+    assert.equal(trace[0].panelValues.messages,0);
+    assert.ok(trace.every(f=>f.curveWidth<1));
+    assert.ok(trace.at(-1).barsDrawn>100);
     const before=fs.statSync(mp4).mtimeMs;
     await worker.runWorkerCycle();
     assert.equal(fs.statSync(mp4).mtimeMs,before,'done jobs must not render twice');

@@ -9,9 +9,7 @@ espera, no éxito. Tras cinco fallos el error queda registrado en la cola.
 La media final almacenada se conserva durante todos los fotogramas. Las horas
 vistas se calculan con las muestras originales y los huecos registrados. No se
 modifica el colector ni se reconstruyen mediciones históricas en esta corrección.
-El diseño del motor original se encuentra en `src/radar-template`; no se cambian
-colores, paneles, tipografía ni posiciones. La cobertura desconocida del chat se
-identifica como no medida, sin inventar un porcentaje.
+El exportador carga directamente `public/radar-live.html`: página y MP4 usan el mismo canvas del ecualizador. No existe una segunda plantilla. El reloj del vídeo es determinista: progreso = frame / (frames - 1); la última muestra llega al borde derecho en el último fotograma. Las barras son decorativas y la curva interpola las mediciones. No se reconstruye audiencia no capturada.
 
 ## Ejecución
 
@@ -38,3 +36,5 @@ Esta modificación se verificó localmente. Subir a GitHub o desplegar en Render
 es una operación separada; el servidor remoto necesita almacenamiento persistente
 y un navegador ejecutable. Las pruebas de exportación no certifican retrospectivamente
 la exactitud de las muestras obtenidas por versiones anteriores del colector.
+
+El resumen exportado integra los paneles finales y la media grande bajo el mismo ecualizador. La curva usa un único trazo de 0,8 px y una punta de 2,5 px. Los paneles leen el resumen guardado; no cambian los cálculos. Se comprobó igualdad de píxeles de cabecera, paneles y media entre el inicio y el final, además de la reproducción completa del MP4.
