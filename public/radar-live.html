@@ -620,14 +620,23 @@
         ctx.fillText(val.toLocaleString(), MARGIN.left - 12, yPos);
       }
 
-      // 8. Eje X (Horarios)
+      // 8. Eje X (Horarios) con Resaltado del Minuto de Oro (Pico)
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       const xSteps = reportLayout ? 18 : 6;
+      let peakT = null;
+      if (densePoints.length > 0) {
+        let maxPt = densePoints[0];
+        for (const p of densePoints) { if (p.v > maxPt.v) maxPt = p; }
+        peakT = maxPt.t;
+      }
       for (let i = 0; i <= xSteps; i++) {
         const tVal = firstT + (timeSpan / xSteps) * i;
         const xPos = MARGIN.left + (i / xSteps) * graphW;
+        const isNearPeak = peakT && Math.abs(tVal - peakT) < (timeSpan / xSteps) * 0.45;
         const timeStr = new Date(tVal).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+        ctx.fillStyle = isNearPeak ? neon : '#64748b';
+        ctx.font = isNearPeak ? '800 12px Arial' : (reportLayout ? '9px Consolas, monospace' : '600 12px Arial');
         if (reportLayout) {
           ctx.save(); ctx.translate(xPos, MARGIN.bottom + 12); ctx.rotate(-Math.PI / 4);
           ctx.textAlign = 'right'; ctx.fillText(timeStr, 0, 0); ctx.restore();
@@ -640,7 +649,7 @@
       const visiblePoints = densePoints.filter(p => p.t < headTime);
       visiblePoints.push({ t: headTime, v: currentInterpolator(headTime) });
 
-      // Suavizado e interpolación de espectadores en vivo (Sin mutar array de datos original)
+      // Suavizado e interpolación de espectadores en vivo a 60fps (Sin mutar array de datos original)
       if (currentMode === 'live' && targetViewerCount > 0) {
         displayedViewerCount += (targetViewerCount - displayedViewerCount) * 0.14;
       }
@@ -649,73 +658,26 @@
       const hV = (currentMode === 'live' && targetViewerCount > 0) ? displayedViewerCount : head.v;
       const hY = getY(hV);
 
-      // ==========================================
-      // 10. BARRAS DE ECUALIZADOR NEÓN (Conexión Hilo por Hilo a la Curva)
-      // ========================================== 
-      let barsDrawn = 0;
-      if (showEqualizerBars) {
-        const barW = 3;
-        const barStep = 7;
-        const now = (exportMode ? exportTimeMs : performance.now()) * 0.004;
-        const chatSpeed = currentStreamerData?.chat_velocity?.msgs_per_min || 0;
-        const chatBoost = Math.min(1.5, 1 + (chatSpeed / 250));
-        // Límite estricto para que ninguna barra sobrepase el cabezal ni el margen derecho
-        const maxBarX = Math.min(hX - barW, (W - MARGIN.right) - barW);
-
-        for (let bx = MARGIN.left; bx <= maxBarX; bx += barStep) {
-          const normX = Math.max(0, Math.min(1, (bx - MARGIN.left) / graphW));
-          const targetT = firstT + normX * timeSpan;
-          const pVal = currentInterpolator ? currentInterpolator(targetT) : 0;
-          const baseY = getY(pVal);
-
-          const maxAvail = Math.max(0, MARGIN.bottom - baseY);
-          if (maxAvail <= 1.5) continue;
-
-          // Pulso senoidal orgánico estilo ecualizador de audio reactivo
-          const pulse = (Math.sin(now * 2.2 + bx * 0.08) * 0.5 + 0.5);
-          const barH = Math.max(3, Math.min(maxAvail, maxAvail * (0.65 + pulse * 0.20 * chatBoost)));
-          const barTop = MARGIN.bottom - barH;
-
-          // 1. HILO TÉCNICO VERTICAL CONECTOR DIRECTO A LA CURVA ("Hilo por Hilo")
-          if (barTop > baseY + 1) {
-            ctx.save();
-            ctx.strokeStyle = isKick ? 'rgba(83, 252, 24, 0.40)' : 'rgba(169, 112, 255, 0.40)';
-            ctx.lineWidth = 0.8;
-            ctx.beginPath();
-            ctx.moveTo(bx + barW / 2, barTop);
-            ctx.lineTo(bx + barW / 2, baseY);
-            ctx.stroke();
-
-            // Nodo de anclaje luminoso en la curva
-            ctx.fillStyle = isKick ? 'rgba(187, 247, 208, 0.95)' : 'rgba(243, 232, 255, 0.95)';
-            ctx.beginPath();
-            ctx.arc(bx + barW / 2, baseY, 1.2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.restore();
-          }
-
-          // 2. CUERPO DE LA BARRA CON GRADIENTE TRANSLÚCIDO NEÓN
-          const barGrad = ctx.createLinearGradient(0, barTop, 0, MARGIN.bottom);
-          barGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.50)' : 'rgba(169, 112, 255, 0.50)');
-          barGrad.addColorStop(0.5, isKick ? 'rgba(83, 252, 24, 0.20)' : 'rgba(169, 112, 255, 0.20)');
-          barGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-          ctx.fillStyle = barGrad;
-          ctx.fillRect(bx, barTop, barW, barH);
-          barsDrawn++;
-
-          // 3. PUNTERO / CABEZAL LUMINOSO EN LA CIMA DE CADA BARRA
-          ctx.fillStyle = isKick ? 'rgba(187, 247, 208, 0.95)' : 'rgba(243, 232, 255, 0.95)';
-          ctx.fillRect(bx, barTop, barW, 1.5);
+      // Conexión fluida de la cola de la curva hacia el cabezal en vivo
+      if (currentMode === 'live' && targetViewerCount > 0 && visiblePoints.length > 2) {
+        const blendN = Math.min(30, Math.floor(visiblePoints.length * 0.35));
+        const lastIdx = visiblePoints.length - 1;
+        visiblePoints[lastIdx].v = hV;
+        for (let b = 1; b <= blendN; b++) {
+          const idx = lastIdx - b;
+          if (idx < 0) break;
+          const weight = 1 - (b / (blendN + 1));
+          const smoothW = weight * weight * (3 - 2 * weight);
+          visiblePoints[idx].v = visiblePoints[idx].v * (1 - smoothW) + hV * smoothW;
         }
       }
 
-      // ==========================================
-      // 11. ÁREA CON GRADIENTE SUAVE
-      // ==========================================
+      // ========================================== 
+      // 10. RESPLANDOR AMBIENTAL TRANSLÚCIDO BAJO LA CURVA
+      // ========================================== 
       const areaGrad = ctx.createLinearGradient(0, MARGIN.top, 0, MARGIN.bottom);
-      areaGrad.addColorStop(0, areaColor);
-      areaGrad.addColorStop(0.7, isKick ? 'rgba(83, 252, 24, 0.06)' : 'rgba(169, 112, 255, 0.06)');
+      areaGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.14)' : 'rgba(169, 112, 255, 0.14)');
+      areaGrad.addColorStop(0.65, isKick ? 'rgba(83, 252, 24, 0.04)' : 'rgba(169, 112, 255, 0.04)');
       areaGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.fillStyle = areaGrad;
@@ -730,14 +692,71 @@
       ctx.closePath();
       ctx.fill();
 
-      // ==========================================
-      // 12. LÍNEA NEÓN RESPLANDECIENTE (GLOW ORGÁNICO SUAVE)
-      // ==========================================
+      // ========================================== 
+      // 11. ECUALIZADOR TÍTERE DE HILOS (ALTA DENSIDAD & CONEXIÓN TOTAL A LA CURVA)
+      // ========================================== 
+      let barsDrawn = 0;
+      if (showEqualizerBars) {
+        const threadStep = 2.8;
+        const threadWidth = 1.0;
+        const now = (exportMode ? exportTimeMs : performance.now()) * 0.003;
+        const chatSpeed = currentStreamerData?.chat_velocity?.msgs_per_min || 0;
+        const chatBoost = Math.min(2.0, 1 + (chatSpeed / 200));
+        // Límite estricto para que ningún hilo sobrepase el cabezal ni el margen derecho
+        const maxBarX = Math.min(hX - 0.5, (W - MARGIN.right) - 0.5);
+
+        for (let bx = MARGIN.left; bx <= maxBarX; bx += threadStep) {
+          const normX = Math.max(0, Math.min(1, (bx - MARGIN.left) / graphW));
+          const targetT = firstT + normX * timeSpan;
+          let pVal = currentInterpolator ? currentInterpolator(targetT) : 0;
+          if (currentMode === 'live' && targetViewerCount > 0 && normX > 0.70) {
+            const blendW = (normX - 0.70) / 0.30;
+            const smoothW = blendW * blendW * (3 - 2 * blendW);
+            pVal = pVal * (1 - smoothW) + hV * smoothW;
+          }
+          const baseY = getY(pVal);
+
+          const maxAvail = Math.max(0, MARGIN.bottom - baseY);
+          if (maxAvail <= 1.5) continue;
+
+          // Física acústica estilo parlante de audio:
+          // Micro-vibraciones armónicas sutiles de alta frecuencia que responden al directo
+          const acoustic = Math.sin(now * 14 + bx * 0.28) * 0.55 + Math.cos(now * 22 + bx * 0.45) * 0.45;
+          const jitter = acoustic * (0.6 + chatBoost * 0.8);
+          const tipY = Math.max(MARGIN.top, Math.min(MARGIN.bottom - 1, baseY + jitter));
+
+          // Gradiente vertical de cada hilo: sutil en la base, resplandeciente en la curva
+          const threadGrad = ctx.createLinearGradient(0, tipY, 0, MARGIN.bottom);
+          threadGrad.addColorStop(0, isKick ? 'rgba(83, 252, 24, 0.85)' : 'rgba(192, 132, 252, 0.85)');
+          threadGrad.addColorStop(0.35, isKick ? 'rgba(83, 252, 24, 0.40)' : 'rgba(169, 112, 255, 0.40)');
+          threadGrad.addColorStop(0.75, isKick ? 'rgba(83, 252, 24, 0.12)' : 'rgba(169, 112, 255, 0.12)');
+          threadGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+          // Hilo técnico vertical conector directo desde el fondo hasta la curva
+          ctx.strokeStyle = threadGrad;
+          ctx.lineWidth = threadWidth;
+          ctx.beginPath();
+          ctx.moveTo(bx, MARGIN.bottom);
+          ctx.lineTo(bx, tipY);
+          ctx.stroke();
+          barsDrawn++;
+
+          // Nodo de anclaje luminoso en la curva ("Títere de hilos")
+          ctx.fillStyle = isKick ? 'rgba(220, 252, 231, 0.95)' : 'rgba(243, 232, 255, 0.95)';
+          ctx.beginPath();
+          ctx.arc(bx, tipY, 0.9, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ========================================== 
+      // 12. CURVA NEÓN ÁGIL Y DELICADA ("COMO UN HILO QUE SE DOBLA FÁCIL")
+      // ========================================== 
       ctx.save();
       ctx.strokeStyle = neon;
-      ctx.lineWidth = 0.9;
+      ctx.lineWidth = 0.8;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 12;
+      ctx.shadowBlur = 4;
       ctx.beginPath();
       visiblePoints.forEach((p, idx) => {
         const isLast = (idx === visiblePoints.length - 1);
@@ -749,10 +768,10 @@
       ctx.stroke();
       ctx.restore();
 
-      // Trazo interior de alta definición para nitidez broadcast
+      // Filamento central hiper-definido para máxima nitidez broadcast
       ctx.save();
-      ctx.strokeStyle = isKick ? 'rgba(220, 252, 231, 0.90)' : 'rgba(245, 243, 255, 0.90)';
-      ctx.lineWidth = 0.6;
+      ctx.strokeStyle = isKick ? 'rgba(235, 255, 240, 0.95)' : 'rgba(250, 245, 255, 0.95)';
+      ctx.lineWidth = 0.45;
       ctx.beginPath();
       visiblePoints.forEach((p, idx) => {
         const isLast = (idx === visiblePoints.length - 1);
@@ -764,9 +783,65 @@
       ctx.stroke();
       ctx.restore();
 
-      // ==========================================
+      // ========================================== 
+      // 12b. MARCADOR Y BADGE DEL PICO MÁXIMO (IMAGEN DE REFERENCIA)
+      // ========================================== 
+      let peakP = visiblePoints[0];
+      for (const p of visiblePoints) {
+        if (p.v > peakP.v) peakP = p;
+      }
+      if (peakP && peakP.v > 0) {
+        const pX = getX(peakP.t);
+        const pY = getY(peakP.v);
+        if (hX >= pX - 2) {
+          ctx.save();
+          // Halo exterior del nodo del pico
+          ctx.strokeStyle = neon;
+          ctx.lineWidth = 2;
+          ctx.shadowColor = neon;
+          ctx.shadowBlur = 8;
+          ctx.beginPath();
+          ctx.arc(pX, pY, 5, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Núcleo blanco del pico
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(pX, pY, 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+
+          // Badge rectangular del pico (como en la foto de referencia: [ 24.810 ])
+          const peakText = Math.round(peakP.v).toLocaleString('es-ES', { useGrouping: 'always' });
+          ctx.font = '800 12px Arial';
+          const pkW = ctx.measureText(peakText).width + 18;
+          const pkH = 22;
+          const pkX = Math.min(W - MARGIN.right - pkW, Math.max(MARGIN.left, pX - pkW / 2));
+          const pkY = Math.max(MARGIN.top - 12, pY - 32);
+
+          ctx.save();
+          ctx.fillStyle = 'rgba(10, 15, 23, 0.92)';
+          ctx.strokeStyle = neon;
+          ctx.lineWidth = 1.2;
+          ctx.shadowColor = neon;
+          ctx.shadowBlur = 6;
+          ctx.beginPath();
+          ctx.rect(pkX, pkY, pkW, pkH);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.fillStyle = neon;
+          ctx.font = '800 12px Arial';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(peakText, pkX + pkW / 2, pkY + pkH / 2);
+        }
+      }
+
+      // ========================================== 
       // 13. AGUJA Y CABEZAL LUMINOSO (PLAYHEAD)
-      // ==========================================
+      // ========================================== 
       // Guía vertical técnica punteada desde la aguja hasta el eje inferior
       ctx.save();
       ctx.strokeStyle = isKick ? 'rgba(83, 252, 24, 0.40)' : 'rgba(169, 112, 255, 0.40)';
@@ -783,16 +858,16 @@
       ctx.strokeStyle = neon;
       ctx.lineWidth = 2;
       ctx.shadowColor = neon;
-      ctx.shadowBlur = 14;
+      ctx.shadowBlur = 10;
       ctx.beginPath();
-      ctx.arc(hX, hY, 7, 0, Math.PI * 2);
+      ctx.arc(hX, hY, 6, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
 
       // Anillo interior neón
       ctx.fillStyle = neon;
       ctx.beginPath();
-      ctx.arc(hX, hY, 4, 0, Math.PI * 2);
+      ctx.arc(hX, hY, 3.5, 0, Math.PI * 2);
       ctx.fill();
 
       // Núcleo blanco nítido
@@ -818,31 +893,36 @@
       const bX = Math.min(W - MARGIN.right - bW, Math.max(MARGIN.left, hX - bW / 2));
       const bY = Math.max(MARGIN.top - 10, hY - 34);
 
-      ctx.save();
-      ctx.fillStyle = '#0f172a';
-      ctx.strokeStyle = neon;
-      ctx.lineWidth = 1.5;
-      ctx.shadowColor = neon;
-      ctx.shadowBlur = 8;
-      ctx.beginPath();
-      ctx.roundRect(bX, bY, bW, bH, 5);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
+      const pX = peakP ? getX(peakP.t) : -999;
+      const overlapsPeak = Math.abs(hX - pX) < (bW / 2 + 10);
+      if (!overlapsPeak || currentMode === 'live' || replayProgress >= 1) {
+        ctx.save();
+        ctx.fillStyle = '#0f172a';
+        ctx.strokeStyle = neon;
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = neon;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.roundRect(bX, bY, bW, bH, 5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
 
-      ctx.fillStyle = neon;
-      ctx.font = '900 12px Arial';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(badgeText, bX + bW / 2, bY + bH / 2);
+        ctx.fillStyle = neon;
+        ctx.font = '900 12px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, bX + bW / 2, bY + bH / 2);
+      }
+
       let panelValues = null;
       if (reportLayout) panelValues = drawFinalStatistics(currentStreamerData, currentSamples, neon);
       return { design: 'radar-live-equalizer', progress, tracerX: hX, chartRight: W - MARGIN.right,
-        timestamp: head.t, viewers: head.v, average: currentStreamerData?.avg_viewers, barsDrawn, panelValues, curveWidth: 0.9 };
+        timestamp: head.t, viewers: head.v, average: currentStreamerData?.avg_viewers, barsDrawn, panelValues, curveWidth: 0.8 };
 
     }
 
-    function drawFinalStatistics(d, samples, neon) {
+        function drawFinalStatistics(d, samples, neon) {
       // Solo presenta los valores del resumen; nunca recalcula ni altera sus estadísticas.
       const valid = v => typeof v === 'number' && Number.isFinite(v);
       const num = (v, digits=0) => valid(v) ? v.toLocaleString('es-ES', {useGrouping:'always',minimumFractionDigits:digits,maximumFractionDigits:digits}) : 'Sin medición';
