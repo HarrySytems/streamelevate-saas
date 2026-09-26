@@ -237,22 +237,24 @@
         return [{ t: now - 30000, v: 0 }, { t: now, v: 0 }];
       }
 
-      // Filtrar el vaciado artificial de desconexión final (shutdown drain):
-      // Si en los últimos segundos la audiencia cae en picada por cierre de OBS (>50% de caída en <180s)
+      // Mantener la curva 'de frente' al final (sin ganchos ni caídas al apagar):
       if (cleaned.length >= 6) {
         const last = cleaned[cleaned.length - 1];
-        let cutoffIdx = cleaned.length;
-        for (let i = cleaned.length - 2; i >= Math.max(0, cleaned.length - 6); i--) {
+        let stableIdx = cleaned.length - 1;
+        for (let i = cleaned.length - 2; i >= Math.max(0, cleaned.length - 8); i--) {
           const dt = (last.t - cleaned[i].t) / 1000;
-          if (dt <= 180 && cleaned[i].v > 500) {
-            const dropRatio = (cleaned[i].v - last.v) / cleaned[i].v;
-            if (dropRatio > 0.50) {
-              cutoffIdx = i + 1;
+          if (dt <= 300) {
+            const dropRatio = (cleaned[i].v - last.v) / (cleaned[i].v || 1);
+            if (dropRatio > 0.12) {
+              stableIdx = i;
             }
           }
         }
-        if (cutoffIdx < cleaned.length) {
-          cleaned = cleaned.slice(0, cutoffIdx);
+        if (stableIdx < cleaned.length - 1) {
+          const stableV = cleaned[stableIdx].v;
+          const endT = last.t;
+          cleaned = cleaned.slice(0, stableIdx + 1);
+          cleaned.push({ t: endT, v: stableV });
         }
       }
 
