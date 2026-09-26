@@ -76,6 +76,42 @@ async function main() {
       )
     `).run(postData);
     console.log('[Westcol] ✅ Post oficial de Westcol publicado con éxito en el Feed de X!');
+
+    if (process.argv.includes('--re-render-video')) {
+      const { renderReport } = require('../src/report-renderer');
+      const { calculateObservedStats } = require('../src/session-state');
+      const fs = require('node:fs');
+      const path = require('node:path');
+
+      console.log('[Westcol] 🎬 Re-renderizando video y PNG oficial a 60fps sin la caída de desconexión...');
+      const samples = db.prepare('SELECT timestamp, viewers FROM audience_samples WHERE stream_id = ? ORDER BY timestamp, id').all(sessionId);
+      const gaps = db.prepare('SELECT started_at, ended_at, reason FROM capture_gaps WHERE stream_id = ?').all(sessionId);
+      const metrics = calculateObservedStats(samples, gaps);
+      const summary = {
+        session_id: westcolStream.id, report_version: 1, platform: 'kick', slug: 'westcol',
+        title: westcolStream.title, category: westcolStream.category,
+        started_at: westcolStream.started_at, ended_at: westcolStream.ended_at,
+        duration_seconds: 18272,
+        peak_viewers: westcolStream.peak_viewers, avg_viewers: westcolStream.avg_viewers,
+        coverage_ratio: westcolStream.coverage_ratio,
+        observed_seconds: metrics.observedSeconds, observed_viewer_hours: metrics.observedViewerHours,
+        total_samples: samples.length, gaps_count: gaps.length,
+        total_messages: 217588, unique_chatters: 16054,
+        start_followers: 4129703, end_followers: 4132081, followers_diff: 2378,
+        generated_at: Date.now()
+      };
+
+      const outputDir = path.join(__dirname, '..', 'data', 'reports');
+      const tempDir = fs.mkdtempSync(path.join(outputDir, '.render-westcol-'));
+      try {
+        const media = await renderReport({ stream: westcolStream, samples, gaps, summary, outputDir: tempDir });
+        fs.copyFileSync(media.pngPath, path.join(outputDir, 'kick_westcol_3d56bda4-cb81-496d-85e7-dcdbf04bf327_summary.png'));
+        fs.copyFileSync(media.mp4Path, path.join(outputDir, 'kick_westcol_3d56bda4-cb81-496d-85e7-dcdbf04bf327_replay.mp4'));
+        console.log('✅ ¡Video MP4 y PNG de Westcol re-generados con éxito total (sin caída brusca)!');
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }
   }
 
   const pendingJobs = db.prepare(`SELECT session_id, status, attempts FROM report_jobs WHERE status = 'pending'`).all();

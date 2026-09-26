@@ -237,6 +237,25 @@
         return [{ t: now - 30000, v: 0 }, { t: now, v: 0 }];
       }
 
+      // Filtrar el vaciado artificial de desconexión final (shutdown drain):
+      // Si en los últimos segundos la audiencia cae en picada por cierre de OBS (>50% de caída en <180s)
+      if (cleaned.length >= 6) {
+        const last = cleaned[cleaned.length - 1];
+        let cutoffIdx = cleaned.length;
+        for (let i = cleaned.length - 2; i >= Math.max(0, cleaned.length - 6); i--) {
+          const dt = (last.t - cleaned[i].t) / 1000;
+          if (dt <= 180 && cleaned[i].v > 500) {
+            const dropRatio = (cleaned[i].v - last.v) / cleaned[i].v;
+            if (dropRatio > 0.50) {
+              cutoffIdx = i + 1;
+            }
+          }
+        }
+        if (cutoffIdx < cleaned.length) {
+          cleaned = cleaned.slice(0, cutoffIdx);
+        }
+      }
+
       // Suavizado orgánico contra escalones rígidos por caché CDN de Twitch
       if (cleaned.length >= 4) {
         const smoothed = cleaned.map(p => ({ t: p.t, v: p.v }));
