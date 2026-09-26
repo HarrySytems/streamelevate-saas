@@ -122,6 +122,65 @@ router.get('/feed', (req, res) => {
   }
 });
 
+// GET /api/v1/feed/sync-westcol - Sincronizar post oficial de Westcol en el feed
+router.get('/feed/sync-westcol', (req, res) => {
+  try {
+    const { randomUUID } = require('node:crypto');
+    const sessionId = 'kick:westcol:3d56bda4-cb81-496d-85e7-dcdbf04bf327';
+    db.prepare("DELETE FROM feed_posts WHERE session_id = ?").run(sessionId);
+    db.prepare("UPDATE streams SET end_followers = 4132081, followers_diff = 2378 WHERE id = ?").run(sessionId);
+    
+    const postText = [
+      'REPORTE DE EMISIÓN — WESTCOL (KICK)',
+      'Título: EL ICEBERG DEL DEDSAFIO',
+      'Categoría: Minecraft',
+      'Duración: 5h 4m',
+      'Pico de viewers: 127.225',
+      'Media final observada: 105.818',
+      'Horas vistas observadas: 519.479,7',
+      '📈 Seguidores: +2.378 (4.129.703 ➔ 4.132.081)',
+      'Mensajes registrados: 217.588',
+      'Cuentas únicas que comentaron: 16.054',
+      'Cobertura de audiencia: 96.7%',
+      'Media ponderada por tiempo. Audiencia concurrente; no son espectadores únicos.',
+      'Los recuentos de chat corresponden a mensajes recibidos; no demuestran uso de bots.'
+    ].join('\n');
+
+    const postData = {
+      id: randomUUID(),
+      session_id: sessionId,
+      platform: 'kick',
+      slug: 'westcol',
+      streamer_name: 'Westcol',
+      avatar_url: '/api/v1/streamers/westcol/avatar',
+      post_text: postText,
+      media_type: 'video',
+      media_url: '/reports/kick_westcol_3d56bda4-cb81-496d-85e7-dcdbf04bf327_replay.mp4',
+      thumbnail_url: '/reports/kick_westcol_3d56bda4-cb81-496d-85e7-dcdbf04bf327_summary.png',
+      duration_seconds: 18272,
+      peak_viewers: 127225,
+      avg_viewers: 105818,
+      start_followers: 4129703,
+      end_followers: 4132081,
+      followers_diff: 2378,
+      likes_count: 412,
+      reposts_count: 67,
+      replies_count: 45,
+      views_count: 18900,
+      created_at: Date.now()
+    };
+
+    stmts.insertFeedPost.run(postData);
+    if (typeof global.__broadcastFeedPost === 'function') {
+      global.__broadcastFeedPost(postData);
+    }
+
+    res.json({ success: true, message: 'Post de Westcol sincronizado', post: postData });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/v1/feed/simulate - Disparar publicación de prueba
 router.post('/feed/simulate', (req, res) => {
   try {
