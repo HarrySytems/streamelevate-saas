@@ -11,11 +11,14 @@ async function main() {
   // Reactivar trabajos fallidos o pendientes
   const updateResult = db.prepare(`
     UPDATE report_jobs 
-    SET status = 'pending', attempts = 0, next_attempt_at = 0 
+    SET status = 'pending', attempts = 0, next_attempt_at = 1000 
     WHERE status != 'done'
   `).run();
   
-  console.log(`[ReportJobs] ${updateResult.changes} trabajos reactivados para procesamiento.`);
+  // Priorizar Westcol para que se procese de primero
+  db.prepare(`UPDATE report_jobs SET next_attempt_at = 1 WHERE session_id LIKE '%westcol%'`).run();
+  
+  console.log(`[ReportJobs] ${updateResult.changes} trabajos reactivados para procesamiento (Westcol priorizado).`);
 
   const pendingJobs = db.prepare(`SELECT session_id, status, attempts FROM report_jobs WHERE status = 'pending'`).all();
   console.log('[ReportJobs] Trabajos en cola:', pendingJobs);
