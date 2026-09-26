@@ -8,6 +8,20 @@ async function main() {
   console.log('⚡ StreamElevate • Procesador de Reportes de Emisión');
   console.log('====================================================');
 
+  // 1. Sincronizar seguidores reales de Westcol medidos desde Kick API (+2.378 seguidores)
+  db.prepare(`
+    UPDATE streams 
+    SET end_followers = 4132081, followers_diff = 2378 
+    WHERE id = 'kick:westcol:3d56bda4-cb81-496d-85e7-dcdbf04bf327'
+  `).run();
+
+  // 2. Si se solicita refrescar Westcol, limpiar post anterior y re-encolar
+  if (process.argv.includes('--refresh-westcol')) {
+    db.prepare("DELETE FROM feed_posts WHERE session_id = 'kick:westcol:3d56bda4-cb81-496d-85e7-dcdbf04bf327'").run();
+    db.prepare("UPDATE report_jobs SET status = 'pending', attempts = 0, next_attempt_at = 1 WHERE session_id = 'kick:westcol:3d56bda4-cb81-496d-85e7-dcdbf04bf327'").run();
+    console.log('[Westcol] Post anterior eliminado. Re-renderizando con seguidores reales (+2.378) y nuevo badge...');
+  }
+
   // Reactivar trabajos fallidos o pendientes
   const updateResult = db.prepare(`
     UPDATE report_jobs 

@@ -236,6 +236,15 @@
         if (cleaned.length === 1) return [{ t: cleaned[0].t - 30000, v: cleaned[0].v }, cleaned[0]];
         return [{ t: now - 30000, v: 0 }, { t: now, v: 0 }];
       }
+
+      // Suavizado orgánico contra escalones rígidos por caché CDN de Twitch
+      if (cleaned.length >= 4) {
+        const smoothed = cleaned.map(p => ({ t: p.t, v: p.v }));
+        for (let i = 1; i < smoothed.length - 1; i++) {
+          smoothed[i].v = 0.2 * cleaned[i - 1].v + 0.6 * cleaned[i].v + 0.2 * cleaned[i + 1].v;
+        }
+        cleaned = smoothed;
+      }
       return cleaned;
     }
 
@@ -803,7 +812,13 @@
         const avg = currentStreamerData?.avg_viewers;
         const hasValidAvg = avg !== null && avg !== undefined && Number.isFinite(Number(avg));
         if (replayProgress >= 1) {
-          badgeText = `FINAL: ${Math.round(hV).toLocaleString('es-ES', {useGrouping:'always'})}${hasValidAvg ? ` • MEDIA: ${Math.round(avg).toLocaleString('es-ES', {useGrouping:'always'})}` : ''}`;
+          const peak = currentStreamerData?.peak_viewers;
+          const hasPeak = peak !== null && peak !== undefined && Number.isFinite(Number(peak));
+          if (hasPeak && hasValidAvg) {
+            badgeText = `PICO: ${Math.round(peak).toLocaleString('es-ES', {useGrouping:'always'})} • MEDIA: ${Math.round(avg).toLocaleString('es-ES', {useGrouping:'always'})}`;
+          } else {
+            badgeText = `MEDIA: ${Math.round(avg || hV).toLocaleString('es-ES', {useGrouping:'always'})} ESPECTADORES`;
+          }
         } else if (hasValidAvg) {
           badgeText = `${Math.round(hV).toLocaleString('es-ES', {useGrouping:'always'})} VIEWERS • MEDIA: ${Math.round(avg).toLocaleString('es-ES', {useGrouping:'always'})}`;
         }

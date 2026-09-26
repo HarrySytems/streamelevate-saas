@@ -424,10 +424,21 @@ function closeStreamSession(active) {
     const totalDurationSeconds = Math.max(1, (finalEndedAt - active.startedAt) / 1000);
     const coverageRatio = Math.min(1.0, observedSeconds / totalDurationSeconds);
 
-    // null = cobertura insuficiente.
-    // NO sustituir por active.viewers: ese valor no es una media, es el último dato puntual.
+    // Garantizar que la curva descienda limpiamente a 0 al final de la emisión
+    try {
+      const lastAudienceSample = samples && samples.length > 0 ? samples[samples.length - 1] : null;
+      if (lastAudienceSample && lastAudienceSample.viewers > 0) {
+        recordAudience(active.id, active.platform, active.slug, finalEndedAt, 0, active.category, active.title);
+      }
+    } catch(e) {}
 
-    const endFollowers = active.endFollowers != null ? active.endFollowers : (active.startFollowers || null);
+    let endFollowers = active.endFollowers != null ? active.endFollowers : (active.startFollowers || null);
+    if (active.platform === 'kick') {
+      const cached = kickFollowersCache.get(active.slug.toLowerCase());
+      if (cached && cached.count != null) {
+        endFollowers = cached.count;
+      }
+    }
     const startFollowers = active.startFollowers != null ? active.startFollowers : null;
     const followersDiff = (startFollowers != null && endFollowers != null) ? (endFollowers - startFollowers) : null;
 
@@ -685,6 +696,12 @@ async function pollKickBatch(channels) {
           active.title = title;
           active.avatarUrl = avatarUrl;
           active.lastLiveAt = now;
+          if (!active.lastFollowerCheck || (now - active.lastFollowerCheck > 120000)) {
+            active.lastFollowerCheck = now;
+            fetchKickFollowers(slug).then(f => {
+              if (f != null && active) active.endFollowers = f;
+            }).catch(() => {});
+          }
           if (active.offlineSince) {
             // Reconectó: registrar cierre del hueco
             const gapEnd = now;
@@ -712,6 +729,9 @@ async function pollKickBatch(channels) {
           if (!active.offlineSince) {
             active.offlineSince = now;
             active.firstOfflineAt = now;
+            fetchKickFollowers(slug).then(f => {
+              if (f != null && active) active.endFollowers = f;
+            }).catch(() => {});
             console.log(`[StreamElevate Colector] Señal perdida de ${slug} (Kick) [Matrícula ${active.broadcastId}]. Esperando 5 min por microcorte de red...`);
             continue;
           }
