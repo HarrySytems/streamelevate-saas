@@ -221,7 +221,7 @@
     // ==========================================
     function cleanSamples(raw) {
       const seen = new Set();
-      const cleaned = (raw || [])
+      let cleaned = (raw || [])
         .map(s => ({ t: Number(s.timestamp ?? s.t), v: Number(s.viewers ?? s.v) }))
         .filter(s => Number.isFinite(s.t) && Number.isFinite(s.v) && s.v >= 0)
         .sort((a, b) => a.t - b.t)
